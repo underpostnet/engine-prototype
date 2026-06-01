@@ -1,0 +1,72 @@
+name: CI | Publish github repository package
+on:
+  push:
+    branches: ['master']
+  pull_request:
+    branches: ['master']
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+jobs:
+  pwa-microservices-template-ghpk:
+    if: github.repository == 'underpostnet/pwa-microservices-template' && startsWith(github.event.head_commit.message, 'ci(package-pwa-microservices-template-ghpkg)')
+    name: Update github repo package Jobs
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/rockylinux/rockylinux:9
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install required packages
+        run: |
+          dnf install -y sudo tar gzip bzip2 git
+          dnf install -y curl --allowerasing
+
+      - name: Install Node.js
+        run: |
+          curl -fsSL https://rpm.nodesource.com/setup_24.x | bash -
+          dnf install nodejs -y
+
+      - name: Capture commit message
+        run: |
+          FULL_MSG="${{ github.event.head_commit.message }}"
+          LAST_COMMIT_MESSAGE="${FULL_MSG:-update package}"
+          echo "LAST_COMMIT_MESSAGE<<EOF" >> $GITHUB_ENV
+          echo "$LAST_COMMIT_MESSAGE" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "[INFO] Commit message: $LAST_COMMIT_MESSAGE"
+
+      - name: Install dependencies and set repo configuration
+        run: |
+          npm install
+          node ./bin/deploy rename-package @underpostnet/underpost
+          node ./bin/deploy set-repo underpostnet/pwa-microservices-template-ghpkg
+
+      - name: Set git global credentials
+        run: |
+          git config --global --add safe.directory '*'
+          git config --global credential.helper ""
+          git config --global user.name 'underpostnet'
+          git config --global user.email 'fcoverdugoa@underpost.net'
+
+      - name: Clone and Push to github package repository
+        env:
+          GITHUB_TOKEN: ${{ secrets.GIT_AUTH_TOKEN }}
+        run: |
+          node bin clone --bare underpostnet/pwa-microservices-template-ghpkg
+          rm -rf ./.git
+          mv ./pwa-microservices-template-ghpkg.git ./.git
+          pwd
+          git remote set-url origin git@github.com:underpostnet/pwa-microservices-template-ghpkg.git
+          git init
+          git config user.name 'underpostnet'
+          git config user.email 'fcoverdugoa@underpost.net'
+          git add .
+          git status
+          git commit -m "$LAST_COMMIT_MESSAGE"
+          node bin push . underpostnet/pwa-microservices-template-ghpkg

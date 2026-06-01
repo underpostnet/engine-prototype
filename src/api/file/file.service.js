@@ -1,0 +1,499 @@
+/**
+ * File service module for handling file uploads, retrieval, and deletion.
+ * Provides REST API handlers for file operations with MongoDB storage.
+ *
+ * @module src/api/file/file.service.js
+ * @namespace FileServiceServer
+ */
+
+import { DataBaseProviderService } from '../../db/DataBaseProvider.js';
+import { getBearerToken, jwtVerify } from '../../server/auth.js';
+import { loggerFactory } from '../../server/logger.js';
+import crypto from 'crypto';
+import { Types } from 'mongoose';
+
+/**
+ * Logger instance for this module.
+ * @type {Function}
+ * @memberof FileServiceServer
+ * @private
+ */
+const logger = loggerFactory(import.meta);
+
+/**
+ * File Data Transfer Object (DTO) for the service layer.
+ * Provides API-specific transformation methods for file documents including
+ * metadata selection queries and response formatting for REST endpoints.
+ * @namespace FileServiceServer.FileServiceDto
+ * @memberof FileServiceServer
+ */
+class FileServiceDto {
+  /**
+   * Returns file metadata only (no buffer data).
+   * Used for list responses and API integration.
+   * @function toMetadata
+   * @memberof FileServiceServer.FileServiceDto
+   * @param {Object} file - File document from database.
+   * @returns {Object|null} File metadata object, or null if file is falsy.
+   */
+  static toMetadata = (file) => {
+    if (!file) return null;
+    return {
+      _id: file._id,
+      name: file.name || '',
+      mimetype: file.mimetype || 'application/octet-stream',
+      size: file.size || 0,
+      md5: file.md5 || '',
+      cid: file.cid || '',
+      createdAt: file.createdAt,
+      updatedAt: file.updatedAt,
+    };
+  };
+
+  /**
+   * Transforms array of files to metadata only.
+   * @function toMetadataArray
+   * @memberof FileServiceServer.FileServiceDto
+   * @param {Array} files - Array of file documents.
+   * @returns {Array} Array of file metadata objects.
+   */
+  static toMetadataArray = (files) => {
+    if (!Array.isArray(files)) return [];
+    return files.map((file) => FileServiceDto.toMetadata(file));
+  };
+
+  /**
+   * Ensures UTF-8 encoding for filenames.
+   * Fixes issues with special characters (e.g., ñ, é, ü).
+   * @function normalizeFilename
+   * @memberof FileServiceServer.FileServiceDto
+   * @param {string} filename - Raw filename from upload.
+   * @returns {string} UTF-8 encoded filename.
+   */
+  static normalizeFilename = (filename) => {
+    if (!filename) return '';
+    // Ensure string and normalize to UTF-8
+    let normalized = String(filename);
+    // Replace any incorrectly encoded sequences
+    normalized = Buffer.from(normalized, 'utf8').toString('utf8');
+    return normalized;
+  };
+
+  /**
+   * Get select fields for metadata-only queries.
+   * Excludes the 'data' buffer field.
+   * @function metadataSelect
+   * @memberof FileServiceServer.FileServiceDto
+   * @returns {string} Space-separated list of field names for metadata selection.
+   */
+  static metadataSelect = () => {
+    return '_id name mimetype size encoding md5 cid createdAt updatedAt';
+  };
+}
+
+/**
+ * File Factory for file extraction, upload, and creation utilities.
+ * @namespace FileServiceServer.FileFactory
+ * @memberof FileServiceServer
+ */
+class FileFactory {
+  /**
+   * Extract files from request.
+   * Handles both standard 'file' field and custom fields.
+   * @function filesExtract
+   * @memberof FileServiceServer.FileFactory
+   * @param {Object} req - Express request object with files.
+   * @returns {Array} Array of extracted file objects.
+   */
+  static filesExtract = (req) => {
+    const files = [];
+    if (!req.files || Object.keys(req.files).length === 0) {
+      return files;
+    }
+
+    // Handle standard 'file' field
+    if (Array.isArray(req.files.file)) {
+      for (const file of req.files.file) {
+        files.push(file);
+      }
+    } else if (req.files.file) {
+      files.push(req.files.file);
+    }
+
+    // Handle all other fields (like direction codes)
+    for (const keyFile of Object.keys(req.files)) {
+      if (keyFile === 'file') continue; // Already handled above
+
+      const fileOrFiles = req.files[keyFile];
+      if (Array.isArray(fileOrFiles)) {
+        // Multiple files with same field name
+        for (const file of fileOrFiles) {
+          if (file && file.data) {
+            files.push(file);
+          }
+        }
+      } else if (fileOrFiles && fileOrFiles.data) {
+        // Single file
+        files.push(fileOrFiles);
+      }
+    }
+
+    return files;
+  };
+
+  /**
+   * Upload files to database with UTF-8 encoding.
+   * @async
+   * @function upload
+   * @memberof FileServiceServer.FileFactory
+   * @param {Object} req - Express request object with files.
+   * @param {import('mongoose').Model} File - Mongoose File model.
+   * @returns {Promise<Array>} Array of uploaded file metadata objects.
+   */
+  static async upload(req, File) {
+    const results = FileFactory.filesExtract(req);
+    let index = -1;
+
+    for (let file of results) {
+      // Normalize filename to ensure UTF-8 encoding
+      file.name = FileServiceDto.normalizeFilename(file.name);
+      file.encoding = 'utf-8';
+
+      // Save file to database
+      file = await new File(file).save();
+      index++;
+
+      // Retrieve metadata-only response
+      const [result] = await File.find({
+        _id: file._id,
+      }).select(FileServiceDto.metadataSelect());
+
+      results[index] = result;
+    }
+
+    return results;
+  }
+
+  /**
+   * Convert string to hexadecimal.
+   * @function hex
+   * @memberof FileServiceServer.FileFactory
+   * @param {string} [raw=''] - Raw string to convert.
+   * @returns {string} Hexadecimal representation of the string.
+   */
+  static hex = (raw = '') => {
+    return Buffer.from(raw, 'utf8').toString('hex');
+  };
+
+  /**
+   * Get MIME type from file path based on extension.
+   * @function getMymeTypeFromPath
+   * @memberof FileServiceServer.FileFactory
+   * @param {string} path - File path or filename with extension.
+   * @returns {string} MIME type string.
+   */
+  static getMymeTypeFromPath = (path) => {
+    const ext = String(path || '')
+      .toLowerCase()
+      .split('.')
+      .pop();
+    const mimeTypes = {
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      svg: 'image/svg+xml',
+      webp: 'image/webp',
+      pdf: 'application/pdf',
+      md: 'text/markdown',
+      txt: 'text/plain',
+      json: 'application/json',
+    };
+    return mimeTypes[ext] || 'application/octet-stream';
+  };
+
+  /**
+   * Create file object with proper encoding.
+   * @function create
+   * @memberof FileServiceServer.FileFactory
+   * @param {Buffer} [data=Buffer.from([])] - File data buffer.
+   * @param {string} [name=''] - File name.
+   * @returns {Object} File object with name, data, size, encoding, mimetype, and md5.
+   */
+  static create = (data = Buffer.from([]), name = '') => {
+    const normalizedName = FileServiceDto.normalizeFilename(name);
+
+    return {
+      name: normalizedName,
+      data: data,
+      size: data.length,
+      encoding: 'utf-8',
+      tempFilePath: '',
+      truncated: false,
+      mimetype: FileFactory.getMymeTypeFromPath(normalizedName),
+      md5: crypto.createHash('md5').update(data).digest('hex'),
+      cid: undefined,
+    };
+  };
+}
+
+/**
+ * File cleanup utilities for preventing orphaned files.
+ * These utilities help maintain database integrity by automatically removing
+ * orphaned file records when references are changed or deleted in documents.
+ * @namespace FileServiceServer.FileCleanup
+ * @memberof FileServiceServer
+ */
+class FileCleanup {
+  /**
+   * Clean up old file references when document fields are updated.
+   * Deletes old files that are being replaced by new file IDs.
+   * @async
+   * @function cleanupReplacedFiles
+   * @memberof FileServiceServer.FileCleanup
+   * @param {Object} options - Cleanup options.
+   * @param {Object} options.oldDoc - Original document with old file references.
+   * @param {Object} options.newData - New data containing updated file references.
+   * @param {Array<string>} options.fileFields - Array of field names that contain file IDs (e.g., ['fileId', 'mdFileId']).
+   * @param {import('mongoose').Model} options.File - Mongoose File model.
+   * @returns {Promise<Array>} Array of deleted file IDs.
+   */
+  static cleanupReplacedFiles = async ({ oldDoc, newData, fileFields, File }) => {
+    const deletedFileIds = [];
+
+    for (const field of fileFields) {
+      const oldFileId = oldDoc[field];
+      const newFileId = newData[field];
+
+      // If field has old file and new data changes or removes it
+      // newFileId === null means client explicitly wants to remove the file
+      // newFileId === undefined means field was not included in request (no change)
+      if (oldFileId && newFileId !== undefined && (newFileId === null || String(oldFileId) !== String(newFileId))) {
+        try {
+          const file = await File.findOne({ _id: oldFileId });
+          if (file) {
+            await File.findByIdAndDelete(oldFileId);
+            deletedFileIds.push(oldFileId);
+            logger.info(`Cleaned up orphaned file: ${oldFileId} from field: ${field}`);
+          }
+        } catch (err) {
+          logger.error(`Failed to cleanup file ${oldFileId} from field ${field}:`, err);
+        }
+      }
+    }
+
+    return deletedFileIds;
+  };
+
+  /**
+   * Delete all files referenced in a document.
+   * Used when deleting an entire document.
+   * This method removes all files associated with the document before
+   * the document itself is deleted, preventing orphaned file records.
+   * @async
+   * @function deleteDocumentFiles
+   * @memberof FileServiceServer.FileCleanup
+   * @param {Object} options - Deletion options.
+   * @param {Object} options.doc - Document containing file references.
+   * @param {Array<string>} options.fileFields - Array of field names that contain file IDs.
+   * @param {import('mongoose').Model} options.File - Mongoose File model.
+   * @returns {Promise<Array>} Array of deleted file IDs.
+   */
+  static deleteDocumentFiles = async ({ doc, fileFields, File }) => {
+    const deletedFileIds = [];
+
+    for (const field of fileFields) {
+      const fileId = doc[field];
+
+      if (fileId) {
+        try {
+          const file = await File.findOne({ _id: fileId });
+          if (file) {
+            await File.findByIdAndDelete(fileId);
+            deletedFileIds.push(fileId);
+            logger.info(`Deleted file: ${fileId} from field: ${field}`);
+          }
+        } catch (err) {
+          logger.error(`Failed to delete file ${fileId} from field ${field}:`, err);
+        }
+      }
+    }
+
+    return deletedFileIds;
+  };
+}
+
+/**
+ * File Service for handling REST API file operations.
+ * @namespace FileServiceServer.FileService
+ * @memberof FileServiceServer
+ */
+class FileService {
+  /**
+   * POST - Upload files.
+   * Returns metadata-only response (no buffer data).
+   * @async
+   * @function post
+   * @memberof FileServiceServer.FileService
+   * @param {Object} req - Express request object.
+   * @param {Object} res - Express response object.
+   * @param {Object} options - Request options containing host and path.
+   * @returns {Promise<Array>} Array of uploaded file metadata objects.
+   */
+  static post = async (req, res, options) => {
+    // Check that user is authenticated and not a guest
+    if (!req.auth || !req.auth.user || req.auth.user.role === 'guest') {
+      throw new Error('Authentication required. Guest users cannot upload files.');
+    }
+
+    /** @type {import('./file.model.js').FileModel} */
+    const File = DataBaseProviderService.getModel("File", options);
+
+    const uploadedFiles = await FileFactory.upload(req, File);
+    return FileServiceDto.toMetadataArray(uploadedFiles);
+  };
+
+  /**
+   * GET - Retrieve files.
+   * Returns metadata-only for regular GET.
+   * Returns buffer data for /blob endpoint.
+   * Authorization: Check if file belongs to a public document or user owns the document.
+   * @async
+   * @function get
+   * @memberof FileServiceServer.FileService
+   * @param {Object} req - Express request object.
+   * @param {Object} res - Express response object.
+   * @param {Object} options - Request options containing host and path.
+   * @returns {Promise<Array|Buffer>} Array of file metadata objects or Buffer for blob endpoint.
+   * @throws {Error} If file not found or user not authorized.
+   */
+  static get = async (req, res, options) => {
+    /** @type {import('./file.model.js').FileModel} */
+    const File = DataBaseProviderService.getModel("File", options);
+    /** @type {import('../document/document.model.js').DocumentModel} */
+    const Document = DataBaseProviderService.getModel("Document", options);
+    /** @type {import('../user/user.model.js').User} */
+    const User = DataBaseProviderService.getModel("User", options);
+
+    const isFileAuthorized = async (fileId) => {
+      try {
+        // Find document that references this file
+        const doc = await Document.findOne({
+          $or: [{ fileId: new Types.ObjectId(fileId) }, { mdFileId: new Types.ObjectId(fileId) }],
+        });
+
+        // If file not in any document, allow access
+        if (!doc) return true;
+
+        // If document has 'public' tag, allow all access
+        if (doc.isPublic) return true;
+
+        // Otherwise, user must be authenticated and own the document
+        // Try bearer token first
+        const token = getBearerToken(req);
+        if (token) {
+          try {
+            const payload = jwtVerify(token, options);
+            const user = await User.findOne({ _id: payload._id }).lean();
+            if (user && String(doc.userId) === String(user._id)) return true;
+          } catch (bearerErr) {
+            logger.warn('Bearer token verification failed, trying cookie session fallback:', bearerErr.message);
+          }
+        }
+
+        // Fallback: check cookie-based session (refreshToken cookie)
+        const refreshToken = req.cookies?.refreshToken;
+        if (refreshToken) {
+          try {
+            const user = await User.findOne({ 'activeSessions.tokenHash': refreshToken }).lean();
+            if (user) {
+              const session = user.activeSessions.find((s) => s.tokenHash === refreshToken);
+              if (session && (!session.expiresAt || session.expiresAt >= new Date())) {
+                return String(doc.userId) === String(user._id);
+              }
+            }
+          } catch (cookieErr) {
+            logger.warn('Cookie session verification failed:', cookieErr.message);
+          }
+        }
+
+        return false;
+      } catch (err) {
+        console.log(err);
+        logger.error('Authorization check failed:', err);
+        return false;
+      }
+    };
+
+    // Handle blob endpoint - return raw buffer data
+    if (req.path.startsWith('/blob') && req.params.id) {
+      // Check authorization
+      const authorized = await isFileAuthorized(req.params.id);
+      if (!authorized) {
+        throw new Error('Unauthorized');
+      }
+
+      const file = await File.findOne({ _id: req.params.id });
+
+      if (!file) {
+        throw new Error('File not found');
+      }
+
+      // Set proper content type and return buffer
+      res.set('Content-Type', file.mimetype || 'application/octet-stream');
+      res.set('Content-Length', file.size || 0);
+      res.set('Content-Disposition', `inline; filename="${encodeURIComponent(file.name)}"`);
+
+      // Return Buffer directly (not JSON)
+      return Buffer.from(file.data);
+    }
+
+    // Handle regular GET - return metadata only
+    switch (req.params.id) {
+      case 'all': {
+        const files = await File.find().select(FileServiceDto.metadataSelect());
+        return FileServiceDto.toMetadataArray(files);
+      }
+
+      default: {
+        // Check authorization
+        const authorized = await isFileAuthorized(req.params.id);
+        if (!authorized) {
+          throw new Error('Unauthorized');
+        }
+
+        const files = await File.find({
+          _id: req.params.id,
+        }).select(FileServiceDto.metadataSelect());
+
+        return FileServiceDto.toMetadataArray(files);
+      }
+    }
+  };
+
+  /**
+   * DELETE - Remove files.
+   * @async
+   * @function delete
+   * @memberof FileServiceServer.FileService
+   * @param {Object} req - Express request object.
+   * @param {Object} res - Express response object.
+   * @param {Object} options - Request options containing host and path.
+   * @returns {Promise<Object>} Deleted file metadata object.
+   * @throws {Error} If file not found.
+   */
+  static delete = async (req, res, options) => {
+    /** @type {import('./file.model.js').FileModel} */
+    const File = DataBaseProviderService.getModel("File", options);
+
+    const result = await File.findByIdAndDelete(req.params.id);
+
+    if (!result) {
+      throw new Error('File not found');
+    }
+
+    return FileServiceDto.toMetadata(result);
+  };
+}
+
+export { FileService, FileFactory, FileServiceDto, FileCleanup };

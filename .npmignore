@@ -1,0 +1,15 @@
+/node_modules
+/public
+/engine-private
+/conf
+/tmp
+/logs
+/build
+/coverage
+/.env
+/prometheus_data
+/grafana_data
+/quorum-kubernetes
+.cache
+.nyc_output
+.git

@@ -1,0 +1,46 @@
+name: CD | Release deployment | remote ssh
+
+on:
+  push:
+    branches: [main, master]
+
+  workflow_call:
+
+  workflow_dispatch:
+
+jobs:
+  after-publish:
+    if: |
+      github.event_name == 'workflow_dispatch'
+      || github.event_name == 'workflow_call'
+      || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'cd(ssh-release)'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run remote deploy via SSH
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          # Remote host (secret)
+          host: ${{ secrets.SSH_HOST }}
+          # Remote user (secret)
+          username: ${{ secrets.SSH_USERNAME }}
+          # Private key (secret) — the PEM contents (not a path)
+          key: ${{ secrets.SSH_PRIV_KEY }}
+          # Remote port (optional)
+          port: ${{ secrets.SSH_PORT }}
+          # Optional: increase timeout for long-running commands
+          command_timeout: 60m
+          # Optional: if your private key has a passphrase, add:
+          # passphrase: ${{ secrets.SSH_KEY_PASSPHRASE }}
+          # Commands to run on the remote VM
+          script: |
+            set -e
+            set -o pipefail
+            echo "Starting remote release deploy"
+            cd /home/dd/engine
+            sudo -n -- /bin/bash -lc "node bin run pull"
+            sudo -n -- /bin/bash -lc "npm install"
+            sudo -n -- /bin/bash -lc "node bin run secret"
+            sudo -n -- /bin/bash -lc "npm install -g underpost"
+            sudo -n -- /bin/bash -lc "node bin run secret"
+            sudo -n -- /bin/bash -lc "node bin run --dev git-conf"
+            sudo -n -- /bin/bash -lc "node bin run --dev docker-image"

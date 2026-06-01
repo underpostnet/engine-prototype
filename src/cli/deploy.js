@@ -1,0 +1,1466 @@
+/**
+ * Deploy module for managing the deployment of applications and services.
+ * @module src/cli/deploy.js
+ * @namespace UnderpostDeploy
+ */
+
+import {
+  buildKindPorts,
+  buildPortProxyRouter,
+  buildProxyRouter,
+  Config,
+  cronDeployIdResolve,
+  deployRangePortFactory,
+  getDataDeploy,
+  loadConfServerJson,
+  loadReplicas,
+  pathPortAssignmentFactory,
+} from '../server/conf.js';
+import { loggerFactory } from '../server/logger.js';
+import { shellExec } from '../server/process.js';
+import fs from 'fs-extra';
+import dotenv from 'dotenv';
+import { timer } from '../client/components/core/CommonJs.js';
+import os from 'node:os';
+import Underpost from '../index.js';
+
+const logger = loggerFactory(import.meta);
+
+/**
+ * @class UnderpostDeploy
+ * @description Manages the deployment of applications and services.
+ * This class provides a set of static methods to handle the deployment process,
+ * including resource allocation, configuration management, and Kubernetes deployment.
+ * @memberof UnderpostDeploy
+ */
+class UnderpostDeploy {
+  static API = {
+    /**
+     * Creates a router configuration for a list of deployments.
+     * @param {string} deployList - List of deployment IDs to include in the router.
+     * @param {string} env - Environment for which the router is being created.
+     * @returns {object} - Router configuration for the specified deployments.
+     * @memberof UnderpostDeploy
+     */
+    async routerFactory(deployList, env) {
+      const initEnvPath = `./engine-private/conf/${deployList.split(',')[0]}/.env.${env}`;
+      const initEnvObj = dotenv.parse(fs.readFileSync(initEnvPath, 'utf8'));
+      process.env.PORT = initEnvObj.PORT;
+      process.env.NODE_ENV = env;
+      await Config.build('proxy', deployList);
+      return buildPortProxyRouter({ port: env === 'development' ? 80 : 443, proxyRouter: buildProxyRouter() });
+    },
+    /**
+     * Creates a YAML service configuration for a deployment.
+     * @param {string} deployId - Deployment ID for which the service is being created.
+     * @param {string} path - Path for which the service is being created.
+     * @param {string} env - Environment for which the service is being created.
+     * @param {number} port - Port number for the service.
+     * @param {Array<string>} deploymentVersions - List of deployment versions.
+     * @param {string} serviceId - Custom service name (optional).
+     * @param {Array} pathRewritePolicy - Path rewrite policy (optional).
+     * @param {object} timeoutPolicy - Timeout policy (optional).
+     * @param {object} retryPolicy - Retry policy (optional).
+     * @returns {string} - YAML service configuration for the specified deployment.
+     * @memberof UnderpostDeploy
+     */
+    deploymentYamlServiceFactory({
+      deployId,
+      path,
+      env,
+      port,
+      deploymentVersions,
+      serviceId,
+      pathRewritePolicy,
+      timeoutPolicy,
+      retryPolicy,
+    }) {
+      return `
+    - conditions:
+        - prefix: ${path}
+      ${
+        pathRewritePolicy
+          ? `pathRewritePolicy:
+          replacePrefix:
+          ${pathRewritePolicy.map(
+            (rd) => `- prefix: ${rd.prefix}
+            replacement: ${rd.replacement}
+            `,
+          ).join(`
+`)}`
+          : ''
+      }${
+        timeoutPolicy
+          ? `\n      timeoutPolicy:\n${timeoutPolicy.response ? `        response: ${timeoutPolicy.response}\n` : ''}${
+              timeoutPolicy.idle ? `        idle: ${timeoutPolicy.idle}\n` : ''
+            }`
+          : ''
+      }${
+        retryPolicy
+          ? `\n      retryPolicy:\n${retryPolicy.count !== undefined ? `        count: ${retryPolicy.count}\n` : ''}${
+              retryPolicy.perTryTimeout ? `        perTryTimeout: ${retryPolicy.perTryTimeout}\n` : ''
+            }`
+          : ''
+      }
+      enableWebsockets: true
+      services:
+    ${deploymentVersions
+      .map(
+        (version, i) =>
+          `    - name: ${serviceId ? serviceId : `${deployId}-${env}-${version}-service`}
+          port: ${port}
+          weight: ${i === 0 ? 100 : 0}
+    `,
+      )
+      .join('')}`;
+    },
+    /**
+     * Creates a YAML deployment configuration for a deployment.
+     * @param {string} deployId - Deployment ID for which the deployment is being created.
+     * @param {string} env - Environment for which the deployment is being created.
+     * @param {string} suffix - Suffix for the deployment.
+     * @param {object} resources - Resource configuration for the deployment.
+     * @param {number} replicas - Number of replicas for the deployment.
+     * @param {string} image - Docker image for the deployment.
+     * @param {string} namespace - Kubernetes namespace for the deployment.
+     * @param {Array<object>} volumes - Volume configurations for the deployment.
+     * @param {Array<string>} cmd - Command to run in the deployment container.
+     * @param {boolean} skipFullBuild - Whether to skip the full client bundle build during deployment.
+     * @param {boolean} pullBundle - Whether to pull the pre-built client bundle from Cloudinary before starting. Use together with skipFullBuild to skip the local build entirely.
+     * @param {string} [imagePullPolicy] - Container imagePullPolicy override (`Always`, `IfNotPresent`, `Never`). When omitted, defaults to `Never` for `localhost/` images and `IfNotPresent` otherwise.
+     * @returns {string} - YAML deployment configuration for the specified deployment.
+     * @memberof UnderpostDeploy
+     */
+    deploymentYamlPartsFactory({
+      deployId,
+      env,
+      suffix,
+      resources,
+      replicas,
+      image,
+      namespace,
+      volumes,
+      cmd,
+      skipFullBuild,
+      pullBundle,
+      imagePullPolicy,
+      // K8S lifecycle + probe wiring. Pass-through structures shaped like the
+      // upstream Kubernetes API, spliced verbatim into the container spec.
+      //   lifecycle:        { postStart: { exec: { command: [...] } }, preStop: { exec: { command: [...] } } }
+      //   readinessProbe:   { tcpSocket: { port: 8081 }, ... }
+      //   livenessProbe:    { tcpSocket: { port: 8081 }, ... }
+      //   containerPort:    integer; rendered as ports[0].containerPort. Optional.
+      lifecycle,
+      readinessProbe,
+      livenessProbe,
+      containerPort,
+    }) {
+      if (!cmd)
+        cmd =
+          pullBundle || skipFullBuild
+            ? [
+                // When pullBundle (or skipFullBuild) is set the container pulls the pre-built client
+                // bundle from Cloudinary (push-bundle must have been run on the dev machine beforehand).
+                `underpost secret underpost --create-from-env`,
+                `underpost start --build --run --pull-bundle --skip-full-build ${deployId} ${env}`,
+              ]
+            : [
+                // `npm install -g npm@11.2.0`,
+                // `npm install -g underpost`,
+                `underpost secret underpost --create-from-env`,
+                `underpost start --build --run ${deployId} ${env}`,
+              ];
+      const packageJson = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
+      if (!volumes) volumes = [];
+      const confVolume = fs.existsSync(`./engine-private/conf/${deployId}/conf.volume.json`)
+        ? JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.volume.json`, 'utf8'))
+        : [];
+      volumes = volumes.concat(confVolume);
+      // const containerImage = image ? image : `localhost/rockylinux9-underpost:v${packageJson.version}`;
+      const containerImage = image ? image : `underpost/underpost-engine:v${packageJson.version}`;
+      return `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${deployId}-${env}-${suffix}
+  namespace: ${namespace ? namespace : 'default'}
+  labels:
+    app: ${deployId}-${env}-${suffix}
+    deploy-id: ${deployId}-${env}
+spec:
+  replicas: ${replicas}
+  selector:
+    matchLabels:
+      app: ${deployId}-${env}-${suffix}
+  template:
+    metadata:
+      labels:
+        app: ${deployId}-${env}-${suffix}
+        deploy-id: ${deployId}-${env}
+    spec:
+      containers:
+        - name: ${deployId}-${env}-${suffix}
+          image: ${containerImage}
+          imagePullPolicy: ${imagePullPolicy ? imagePullPolicy : containerImage.startsWith('localhost/') ? 'Never' : 'IfNotPresent'}
+          envFrom:
+            - secretRef:
+                name: underpost-config
+${
+  containerPort
+    ? `          ports:
+            - containerPort: ${containerPort}
+`
+    : ''
+}${
+        resources
+          ? `          resources:
+            requests:
+              memory: "${resources.requests.memory}"
+              cpu: "${resources.requests.cpu}"
+            limits:
+              memory: "${resources.limits.memory}"
+              cpu: "${resources.limits.cpu}"`
+          : ''
+      }
+          command:
+            - /bin/sh
+            - -c
+            - >
+              ${cmd.join(' &&\n              ')}
+${
+  readinessProbe
+    ? `          readinessProbe:
+${JSON.stringify(readinessProbe, null, 2)
+  .split('\n')
+  .map((l) => '            ' + l)
+  .join('\n')}
+`
+    : ''
+}${
+        livenessProbe
+          ? `          livenessProbe:
+${JSON.stringify(livenessProbe, null, 2)
+  .split('\n')
+  .map((l) => '            ' + l)
+  .join('\n')}
+`
+          : ''
+      }${
+        lifecycle
+          ? `          lifecycle:
+${JSON.stringify(lifecycle, null, 2)
+  .split('\n')
+  .map((l) => '            ' + l)
+  .join('\n')}
+`
+          : ''
+      }
+
+${
+  volumes.length > 0
+    ? Underpost.deploy
+        .volumeFactory(volumes.map((v) => ((v.version = `${deployId}-${env}-${suffix}`), v)))
+        .render.split(`\n`)
+        .map((l) => '    ' + l)
+        .join(`\n`)
+    : ''
+}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${deployId}-${env}-${suffix}-service
+  namespace: ${namespace}
+spec:
+  selector:
+    app: ${deployId}-${env}-${suffix}
+  ports:
+{{ports}}  type: LoadBalancer`;
+    },
+    /**
+     * Builds a manifest for a list of deployments.
+     * @param {string} deployList - List of deployment IDs to include in the manifest.
+     * @param {string} env - Environment for which the manifest is being built.
+     * @param {object} options - Options for the manifest build process.
+     * @param {string} options.replicas - Number of replicas for each deployment.
+     * @param {string} options.image - Docker image for the deployment.
+     * @param {string} options.namespace - Kubernetes namespace for the deployment.
+     * @param {string} [options.versions] - Comma-separated list of versions to deploy.
+     * @param {string} [options.cmd] - Custom initialization command for deploymentYamlPartsFactory (comma-separated commands).
+     * @param {string} [options.timeoutResponse] - Timeout response setting for the deployment.
+     * @param {string} [options.timeoutIdle] - Timeout idle setting for the deployment.
+     * @param {string} [options.retryCount] - Retry count setting for the deployment.
+     * @param {string} [options.retryPerTryTimeout] - Retry per-try timeout setting for the deployment.
+     * @param {boolean} [options.disableDeploymentProxy] - Whether to disable deployment proxy.
+     * @param {string} [options.traffic] - Traffic status for the deployment.
+     * @param {boolean} [options.skipFullBuild] - Whether to skip the full client bundle build; forwarded to deploymentYamlPartsFactory to generate a pull-bundle startup command.
+     * @param {boolean} [options.pullBundle] - Whether to pull the pre-built client bundle from Cloudinary; forwarded to deploymentYamlPartsFactory. Use together with skipFullBuild.
+     * @param {string} [options.imagePullPolicy] - Container imagePullPolicy override (`Always`, `IfNotPresent`, `Never`); forwarded to deploymentYamlPartsFactory. When omitted, the builder defaults to `Never` for `localhost/` images and `IfNotPresent` otherwise.
+     * @returns {Promise<void>} - Promise that resolves when the manifest is built.
+     * @memberof UnderpostDeploy
+     */
+    async buildManifest(deployList, env, options) {
+      const replicas = options.replicas;
+      const image = options.image;
+      if (!options.namespace) options.namespace = 'default';
+
+      for (const _deployId of deployList.split(',')) {
+        const deployId = _deployId.trim();
+        if (!deployId) continue;
+        const confServer = loadReplicas(
+          deployId,
+          loadConfServerJson(`./engine-private/conf/${deployId}/conf.server.json`),
+        );
+        const router = await Underpost.deploy.routerFactory(deployId, env);
+        const pathPortAssignmentData = await pathPortAssignmentFactory(deployId, router, confServer);
+        const { fromPort, toPort } = deployRangePortFactory(router);
+        const deploymentVersions = options.versions.split(',');
+        fs.mkdirSync(`./engine-private/conf/${deployId}/build/${env}`, { recursive: true });
+        if (env === 'development') fs.mkdirSync(`./manifests/deployment/${deployId}-${env}`, { recursive: true });
+
+        logger.info('port range', { deployId, fromPort, toPort });
+
+        let deploymentYamlParts = '';
+        for (const deploymentVersion of deploymentVersions) {
+          deploymentYamlParts += `---
+${Underpost.deploy
+  .deploymentYamlPartsFactory({
+    deployId,
+    env,
+    suffix: deploymentVersion,
+    replicas,
+    image,
+    namespace: options.namespace,
+    cmd: options.cmd ? options.cmd.split(',').map((c) => c.trim()) : undefined,
+    skipFullBuild: options.skipFullBuild,
+    pullBundle: options.pullBundle,
+    imagePullPolicy: options.imagePullPolicy,
+  })
+  .replace('{{ports}}', buildKindPorts(fromPort, toPort))}
+`;
+        }
+        fs.writeFileSync(`./engine-private/conf/${deployId}/build/${env}/deployment.yaml`, deploymentYamlParts, 'utf8');
+
+        Underpost.deploy.buildGrpcServiceManifest({
+          deployId,
+          env,
+          confServer,
+          namespace: options.namespace,
+          traffic: options.traffic && typeof options.traffic === 'string' ? options.traffic.split(',') : ['blue'],
+        });
+
+        const confVolume = fs.existsSync(`./engine-private/conf/${deployId}/conf.volume.json`)
+          ? JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.volume.json`, 'utf8'))
+          : [];
+        if (confVolume.length > 0) {
+          let volumeYaml = '';
+          for (const deploymentVersion of deploymentVersions) {
+            for (const volume of confVolume) {
+              if (!volume.claimName) continue;
+              const pvcId = `${volume.claimName}-${deployId}-${env}-${deploymentVersion}`;
+              const pvId = pvcId.replace(/^pvc-/, 'pv-');
+              const hostPath = `/home/dd/engine/volume/${pvId}`;
+              volumeYaml += `---\n${Underpost.deploy.persistentVolumeFactory({
+                pvcId,
+                namespace: options.namespace,
+                hostPath,
+              })}\n`;
+            }
+          }
+          fs.writeFileSync(`./engine-private/conf/${deployId}/build/${env}/pv-pvc.yaml`, volumeYaml, 'utf8');
+        }
+
+        let proxyYaml = '';
+        let secretYaml = '';
+        const customServices = fs.existsSync(`./engine-private/conf/${deployId}/conf.services.json`)
+          ? JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.services.json`))
+          : [];
+
+        for (const host of Object.keys(confServer)) {
+          if (env === 'production')
+            secretYaml += Underpost.deploy.buildCertManagerCertificate({ host, namespace: options.namespace });
+
+          const pathPortAssignment = pathPortAssignmentData[host];
+          // logger.info('', { host, pathPortAssignment });
+          let _proxyYaml = Underpost.deploy.baseProxyYamlFactory({ host, env, options });
+          const deploymentVersions =
+            options.traffic && typeof options.traffic === 'string' ? options.traffic.split(',') : ['blue'];
+          let proxyRoutes = '';
+          const globalTimeoutPolicy =
+            (options.timeoutResponse && options.timeoutResponse !== '') ||
+            (options.timeoutIdle && options.timeoutIdle !== '')
+              ? {
+                  response: options.timeoutResponse,
+                  idle: options.timeoutIdle,
+                }
+              : undefined;
+          const globalRetryPolicy =
+            options.retryCount ||
+            options.retryCount === 0 ||
+            (options.retryPerTryTimeout && options.retryPerTryTimeout !== '')
+              ? {
+                  count: options.retryCount,
+                  perTryTimeout: options.retryPerTryTimeout,
+                }
+              : undefined;
+          if (!options.disableDeploymentProxy)
+            for (const conditionObj of pathPortAssignment) {
+              const { path, port } = conditionObj;
+              proxyRoutes += Underpost.deploy.deploymentYamlServiceFactory({
+                path,
+                deployId,
+                env,
+                port,
+                deploymentVersions,
+                timeoutPolicy: globalTimeoutPolicy,
+                retryPolicy: globalRetryPolicy,
+              });
+            }
+          for (const customService of customServices) {
+            const {
+              path: _path,
+              port,
+              serviceId,
+              host: _host,
+              pathRewritePolicy,
+              timeoutPolicy: _timeoutPolicy,
+              retryPolicy: _retryPolicy,
+            } = customService;
+            if (host === _host) {
+              proxyRoutes += Underpost.deploy.deploymentYamlServiceFactory({
+                path: _path,
+                port,
+                serviceId,
+                deploymentVersions,
+                pathRewritePolicy,
+                timeoutPolicy: _timeoutPolicy ? _timeoutPolicy : globalTimeoutPolicy,
+                retryPolicy: _retryPolicy ? _retryPolicy : globalRetryPolicy,
+              });
+            }
+          }
+          if (proxyRoutes) proxyYaml += _proxyYaml + proxyRoutes;
+        }
+        const yamlPath = `./engine-private/conf/${deployId}/build/${env}/proxy.yaml`;
+        fs.writeFileSync(yamlPath, proxyYaml, 'utf8');
+        if (env === 'production') {
+          const yamlPath = `./engine-private/conf/${deployId}/build/${env}/secret.yaml`;
+          fs.writeFileSync(yamlPath, secretYaml, 'utf8');
+        } else {
+          const deploymentsFiles = ['Dockerfile', 'proxy.yaml', 'deployment.yaml', 'pv-pvc.yaml'];
+          for (const file of deploymentsFiles) {
+            if (fs.existsSync(`./engine-private/conf/${deployId}/build/${env}/${file}`)) {
+              fs.copyFileSync(
+                `./engine-private/conf/${deployId}/build/${env}/${file}`,
+                `./manifests/deployment/${deployId}-${env}/${file}`,
+              );
+            }
+          }
+        }
+      }
+    },
+    /**
+     * Builds and writes a gRPC ClusterIP service YAML for a deployment.
+     * Scans conf.server.json for gRPC ports and emits grpc-service.yaml under
+     * `engine-private/conf/<deployId>/build/<env>/`. The selector always uses the
+     * explicit `app: <deployId>-<env>-<traffic>` label to target only the active
+     * colour (blue or green).
+     * @param {string} deployId - Deployment ID.
+     * @param {string} env - Environment ('development' or 'production').
+     * @param {object} confServer - Parsed conf.server.json content.
+     * @param {string} [namespace='default'] - Kubernetes namespace.
+     * @param {string[]} [traffic=['blue']] - Active traffic colour(s) ('blue', 'green', or both).
+     * @param {string|null} [host=null] - Specific host to scan for gRPC ports. If null, all hosts are scanned.
+     * @returns {string|null} - Path to the written YAML file, or null if no gRPC ports found.
+     * @memberof UnderpostDeploy
+     */
+    buildGrpcServiceManifest({ deployId, env, confServer, namespace = 'default', traffic = ['blue'], host = null }) {
+      const grpcPorts = new Set();
+      const hostsToScan = host ? [host] : Object.keys(confServer);
+      for (const h of hostsToScan) {
+        if (!confServer[h]) continue;
+        for (const path of Object.keys(confServer[h])) {
+          const grpc = confServer[h][path].grpc;
+          if (grpc && grpc.port) grpcPorts.add(parseInt(grpc.port));
+        }
+      }
+      if (grpcPorts.size === 0) return null;
+      const grpcPortsList = [...grpcPorts]
+        .map(
+          (port) => `    - name: grpc-${port}
+      protocol: TCP
+      port: ${port}
+      targetPort: ${port}`,
+        )
+        .join('\n');
+      let grpcServiceYaml = '';
+      for (const color of traffic) {
+        const grpcServiceName = `${deployId}-grpc-service-${env}-${color}`;
+        const selectorYaml = `app: ${deployId}-${env}-${color}`;
+        grpcServiceYaml += `---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${grpcServiceName}
+  namespace: ${namespace}
+  labels:
+    app: ${grpcServiceName}
+spec:
+  type: ClusterIP
+  selector:
+    ${selectorYaml}
+  ports:
+${grpcPortsList}
+`;
+        logger.info(
+          `gRPC ClusterIP service YAML written: ${grpcServiceName} (selector: ${selectorYaml}, ports: ${[...grpcPorts].join(', ')})`,
+        );
+      }
+      const yamlPath = `./engine-private/conf/${deployId}/build/${env}/grpc-service.yaml`;
+      fs.writeFileSync(yamlPath, grpcServiceYaml, 'utf8');
+      return yamlPath;
+    },
+    /**
+     * Builds a Certificate resource for a host using cert-manager.
+     * @param {string} host - Hostname for which the certificate is being built.
+     * @param {string} namespace - Kubernetes namespace for the certificate.
+     * @returns {string} - Certificate resource YAML for the specified host.
+     * @memberof UnderpostDeploy
+     */
+    buildCertManagerCertificate({ host, namespace }) {
+      return `
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ${host}
+  namespace: ${namespace}
+spec:
+  commonName: ${host}
+  dnsNames:
+    - ${host}
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  secretName: ${host}`;
+    },
+    /**
+     * Retrieves the current traffic status for a deployment.
+     * @param {string} deployId - Deployment ID for which the traffic status is being retrieved.
+     * @param {object} options - Options for the traffic retrieval.
+     * @param {string} options.hostTest - Hostname to test for traffic status.
+     * @param {string} options.namespace - Kubernetes namespace for the deployment.
+     * @returns {string|null} - Current traffic status ('blue' or 'green') or null if not found.
+     * @memberof UnderpostDeploy
+     */
+    getCurrentTraffic(deployId, options = { hostTest: '', namespace: '' }) {
+      if (!options.namespace) options.namespace = 'default';
+      // kubectl get deploy,sts,svc,configmap,secret -n default -o yaml --export > default.yaml
+      const hostTest = options?.hostTest
+        ? options.hostTest
+        : Object.keys(loadConfServerJson(`./engine-private/conf/${deployId}/conf.server.json`))[0];
+      // Missing HTTPProxy is the canonical "no traffic colour set yet" state
+      // for blue/green rollouts. silentOnError swallows kubectl's NotFound
+      // exit so the function can return null cleanly.
+      const info = shellExec(`sudo kubectl get HTTPProxy/${hostTest} -n ${options.namespace} -o yaml`, {
+        silent: true,
+        stdout: true,
+        silentOnError: true,
+      });
+      if (!info) return null;
+      return info.match('blue') ? 'blue' : info.match('green') ? 'green' : null;
+    },
+
+    /**
+     * Creates a base YAML configuration for an HTTPProxy resource.
+     * @param {string} host - Hostname for which the HTTPProxy is being created.
+     * @param {string} env - Environment for which the HTTPProxy is being created.
+     * @param {object} options - Options for the HTTPProxy creation.
+     * @param {string} options.namespace - Kubernetes namespace for the HTTPProxy.
+     * @returns {string} - Base YAML configuration for the HTTPProxy resource.
+     * @memberof UnderpostDeploy
+     */
+    baseProxyYamlFactory({ host, env, options }) {
+      return `
+---
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: ${host}
+  namespace: ${options.namespace}
+spec:
+  virtualhost:
+    fqdn: ${host}${
+      env === 'development'
+        ? ''
+        : `
+    tls:
+      secretName: ${host}`
+    }
+  routes:`;
+    },
+
+    /**
+     * Callback function for handling deployment options.
+     * @param {string} deployList - List of deployment IDs to process.
+     * @param {string} env - Environment for which the deployment is being processed.
+     * @param {object} options - Options for the deployment process.
+     * @param {boolean} options.remove - Whether to remove the deployment.
+     * @param {boolean} options.infoRouter - Whether to display router information.
+     * @param {boolean} options.sync - Whether to synchronize deployment configurations.
+     * @param {boolean} options.buildManifest - Whether to build the deployment manifest.
+     * @param {boolean} options.infoUtil - Whether to display utility information.
+     * @param {boolean} options.expose - Whether to expose the deployment.
+     * @param {boolean} options.cert - Whether to create certificates for the deployment.
+     * @param {string} options.certHosts - Comma-separated list of hosts for which to create certificates.
+     * @param {string} options.versions - Comma-separated list of versions to deploy.
+     * @param {string} options.image - Docker image for the deployment.
+     * @param {string} options.traffic - Traffic status for the deployment.
+     * @param {string} options.replicas - Number of replicas for the deployment.
+     * @param {string} options.node - Node name for resource allocation.
+     * @param {boolean} options.disableUpdateDeployment - Whether to disable deployment updates.
+     * @param {boolean} options.disableUpdateProxy - Whether to disable proxy updates.
+     * @param {boolean} options.disableDeploymentProxy - Whether to disable deployment proxy.
+     * @param {boolean} options.disableUpdateVolume - Whether to disable volume updates.
+     * @param {boolean} options.status - Whether to display deployment status.
+     * @param {boolean} options.disableUpdateUnderpostConfig - Whether to disable Underpost config updates.
+     * @param {string} [options.namespace] - Kubernetes namespace for the deployment.
+     * @param {string} [options.timeoutResponse] - Timeout response setting for the deployment.
+     * @param {string} [options.timeoutIdle] - Timeout idle setting for the deployment.
+     * @param {string} [options.retryCount] - Retry count setting for the deployment.
+     * @param {string} [options.retryPerTryTimeout] - Retry per-try timeout setting for the deployment.
+     * @param {string} [options.kindType] - Type of Kubernetes resource to retrieve information for.
+     * @param {number} [options.port] - Port number for exposing the deployment.
+     * @param {string} [options.cmd] - Custom initialization command for deploymentYamlPartsFactory (comma-separated commands).
+     * @param {number} [options.exposePort] - Local:remote port override when --expose is active (overrides auto-detected service port).
+     * @param {boolean} [options.k3s] - Whether to use k3s cluster context.
+     * @param {boolean} [options.kubeadm] - Whether to use kubeadm cluster context.
+     * @param {boolean} [options.kind] - Whether to use kind cluster context.
+     * @param {boolean} [options.gitClean] - Whether to run git clean on volume mount paths before copying.
+     * @param {boolean} [options.skipFullBuild] - Whether to skip the full client bundle build; passed through to buildManifest/deploymentYamlPartsFactory.
+     * @param {boolean} [options.pullBundle] - Whether to pull the pre-built client bundle from Cloudinary; passed through to buildManifest/deploymentYamlPartsFactory. Use together with skipFullBuild.
+     * @param {string} [options.imagePullPolicy] - Container imagePullPolicy override (`Always`, `IfNotPresent`, `Never`); passed through to buildManifest/deploymentYamlPartsFactory. When omitted, the builder defaults to `Never` for `localhost/` images and `IfNotPresent` otherwise.
+     * @returns {Promise<void>} - Promise that resolves when the deployment process is complete.
+     * @memberof UnderpostDeploy
+     */
+    async callback(
+      deployList = '',
+      env = 'development',
+      options = {
+        remove: false,
+        infoRouter: false,
+        sync: false,
+        buildManifest: false,
+        infoUtil: false,
+        expose: false,
+        cert: false,
+        certHosts: '',
+        versions: '',
+        image: '',
+        traffic: '',
+        replicas: '',
+        node: '',
+        disableUpdateDeployment: false,
+        disableUpdateProxy: false,
+        disableDeploymentProxy: false,
+        disableUpdateVolume: false,
+        status: false,
+        disableUpdateUnderpostConfig: false,
+        namespace: '',
+        timeoutResponse: '',
+        timeoutIdle: '',
+        retryCount: '',
+        retryPerTryTimeout: '',
+        kindType: '',
+        port: 0,
+        exposePort: 0,
+        cmd: '',
+        k3s: false,
+        kubeadm: false,
+        kind: false,
+        gitClean: false,
+        imagePullPolicy: '',
+      },
+    ) {
+      const namespace = options.namespace ? options.namespace : 'default';
+      if (!deployList && options.certHosts) {
+        for (const host of options.certHosts.split(',')) {
+          shellExec(`sudo kubectl apply -f - -n ${namespace} <<EOF
+${Underpost.deploy.buildCertManagerCertificate({ host, namespace })}
+EOF`);
+        }
+        return;
+      } else if (!deployList) deployList = 'dd-default';
+      if (deployList === 'dd' && fs.existsSync(`./engine-private/deploy/dd.router`))
+        deployList = fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8');
+      if (options.status === true) {
+        for (const _deployId of deployList.split(',')) {
+          const deployId = _deployId.trim();
+          const instances = [];
+          if (fs.existsSync(`./engine-private/conf/${deployId}/conf.instances.json`)) {
+            const confInstances = JSON.parse(
+              fs.readFileSync(`./engine-private/conf/${deployId}/conf.instances.json`, 'utf8'),
+            );
+            for (const instance of confInstances) {
+              const _deployId = `${deployId}-${instance.id}`;
+              instances.push({
+                id: instance.id,
+                host: instance.host,
+                path: instance.path,
+                fromPort: instance.fromPort,
+                toPort: instance.toPort,
+                fromDebugPort: instance.fromDebugPort,
+                toDebugPort: instance.toDebugPort,
+                traffic: Underpost.deploy.getCurrentTraffic(_deployId, { namespace, hostTest: instance.host }),
+              });
+            }
+          }
+          logger.info('', {
+            deployId,
+            env,
+            traffic: Underpost.deploy.getCurrentTraffic(deployId, { namespace }),
+            router: await Underpost.deploy.routerFactory(deployId, env),
+            pods: await Underpost.kubectl.get(deployId),
+            instances,
+          });
+        }
+        const interfaceName = Underpost.dns.getDefaultNetworkInterface();
+        logger.info('Machine', {
+          hostname: os.hostname(),
+          arch: Underpost.baremetal.getHostArch(),
+          ipv4Public: await Underpost.dns.getPublicIp(),
+          ipv4Local: Underpost.dns.getLocalIPv4Address(),
+          resources: Underpost.cluster.getResourcesCapacity(options.node),
+          defaultInterfaceName: interfaceName,
+          defaultInterfaceInfo: os.networkInterfaces()[interfaceName],
+        });
+        return;
+      }
+      if (!(options.versions && typeof options.versions === 'string')) options.versions = 'blue,green';
+      if (!options.replicas) options.replicas = 1;
+      if (options.sync)
+        await getDataDeploy({
+          buildSingleReplica: true,
+        });
+      if (options.buildManifest === true) await Underpost.deploy.buildManifest(deployList, env, options);
+      if (options.infoRouter === true || options.buildManifest === true) {
+        logger.info('router', await Underpost.deploy.routerFactory(deployList, env));
+        return;
+      }
+      if (!options.disableUpdateUnderpostConfig) Underpost.deploy.configMap(env);
+
+      for (const _deployId of deployList.split(',')) {
+        const deployId = _deployId.trim();
+        if (!deployId) continue;
+        if (options.expose === true) {
+          const kindType = options.kindType ? options.kindType : 'svc';
+          const svc = Underpost.kubectl.get(deployId, kindType)[0];
+          if (!svc) {
+            logger.error(`No ${kindType} found matching '${deployId}', skipping expose`);
+            continue;
+          }
+          const port = options.exposePort
+            ? parseInt(options.exposePort)
+            : options.port
+              ? parseInt(options.port)
+              : kindType !== 'svc'
+                ? 80
+                : parseInt(svc[`PORT(S)`].split('/TCP')[0]);
+          logger.info(deployId, {
+            svc,
+            port,
+          });
+          shellExec(`sudo kubectl port-forward -n ${namespace} ${kindType}/${svc.NAME} ${port}:${port}`, {
+            async: true,
+          });
+          continue;
+        }
+
+        const confServer = loadConfServerJson(`./engine-private/conf/${deployId}/conf.server.json`);
+        const confVolume = fs.existsSync(`./engine-private/conf/${deployId}/conf.volume.json`)
+          ? JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.volume.json`, 'utf8'))
+          : [];
+
+        if (!options.disableUpdateDeployment)
+          for (const version of options.versions.split(',')) {
+            shellExec(
+              `sudo kubectl delete svc ${deployId}-${env}-${version}-service -n ${namespace} --ignore-not-found`,
+            );
+            shellExec(
+              `sudo kubectl delete deployment ${deployId}-${env}-${version} -n ${namespace} --ignore-not-found`,
+            );
+            if (!options.disableUpdateVolume)
+              for (const volume of confVolume)
+                Underpost.deploy.deployVolume(volume, {
+                  deployId,
+                  env,
+                  version,
+                  namespace,
+                  nodeName: options.node ? options.node : env === 'development' ? 'kind-worker' : os.hostname(),
+                  clusterContext: options.k3s ? 'k3s' : options.kubeadm ? 'kubeadm' : 'kind',
+                  gitClean: options.gitClean || false,
+                });
+          }
+
+        for (const host of Object.keys(confServer)) {
+          if (!options.disableUpdateProxy) {
+            shellExec(`sudo kubectl delete HTTPProxy ${host} -n ${namespace} --ignore-not-found`);
+            if (Underpost.deploy.isValidTLSContext({ host, env, options }))
+              shellExec(`sudo kubectl delete Certificate ${host} -n ${namespace} --ignore-not-found`);
+          }
+        }
+
+        const manifestsPath =
+          env === 'production'
+            ? `engine-private/conf/${deployId}/build/production`
+            : `manifests/deployment/${deployId}-${env}`;
+
+        if (!options.remove) {
+          if (!options.disableUpdateDeployment) {
+            shellExec(`sudo kubectl apply -f ./${manifestsPath}/deployment.yaml -n ${namespace}`);
+            const grpcServicePath = `./${manifestsPath}/grpc-service.yaml`;
+            if (fs.existsSync(grpcServicePath)) shellExec(`sudo kubectl apply -f ${grpcServicePath} -n ${namespace}`);
+          }
+          if (!options.disableUpdateProxy)
+            shellExec(`sudo kubectl apply -f ./${manifestsPath}/proxy.yaml -n ${namespace}`);
+
+          if (Underpost.deploy.isValidTLSContext({ host: Object.keys(confServer)[0], env, options }))
+            shellExec(`sudo kubectl apply -f ./${manifestsPath}/secret.yaml -n ${namespace}`);
+        }
+      }
+    },
+    /**
+     * Checks the status of a deployment.
+     * @param {string} deployId - Deployment ID for which the status is being checked.
+     * @param {string} env - Environment for which the status is being checked.
+     * @param {string} traffic - Current traffic status for the deployment.
+     * @param {Array<string>} ignoresNames - List of pod names to ignore.
+     * @param {string} [namespace='default'] - Kubernetes namespace for the deployment.
+     * @returns {object} - Object containing the status of the deployment.
+     * @memberof UnderpostDeploy
+     */
+    async checkDeploymentReadyStatus(deployId, env, traffic, ignoresNames = [], namespace = 'default') {
+      const pods = Underpost.kubectl.get(`${deployId}-${env}-${traffic}`, 'pods', namespace);
+      const readyPods = [];
+      const notReadyPods = [];
+
+      // Readiness signal: the pod's Kubernetes `Ready` condition driven by the
+      // container's readinessProbe (TCP socket, HTTP get, or exec). Set by kubelet
+      // when the probe passes. A failed or crashing runtime never becomes Ready —
+      // kubelet surfaces CrashLoopBackOff and this gate stays closed.
+      for (const pod of pods) {
+        const { NAME } = pod;
+        if (ignoresNames && ignoresNames.find((t) => NAME.trim().toLowerCase().match(t.trim().toLowerCase()))) continue;
+
+        let podJson = null;
+        try {
+          // Pod may not exist yet (between deployment apply and pod
+          // scheduling). silentOnError lets the monitor loop continue
+          // instead of aborting on the transient NotFound exit.
+          const raw = shellExec(`sudo kubectl get pod ${NAME} -n ${namespace} -o json`, {
+            silent: true,
+            disableLog: true,
+            stdout: true,
+            silentOnError: true,
+          });
+          podJson = raw ? JSON.parse(raw) : null;
+        } catch (_) {
+          podJson = null;
+        }
+        const conditions = podJson?.status?.conditions || [];
+        const readyCondition = conditions.find((c) => c.type === 'Ready');
+        const k8sReady = readyCondition?.status === 'True';
+
+        pod.out = JSON.stringify({ k8sReady, condition: readyCondition ?? null });
+
+        if (k8sReady) readyPods.push(pod);
+        else notReadyPods.push(pod);
+      }
+      return {
+        ready: pods.length > 0 && notReadyPods.length === 0,
+        notReadyPods,
+        readyPods,
+      };
+    },
+    /**
+     * Creates a Kubernetes Secret for a deployment (replaces configMap for secret data).
+     * Secrets are mounted as tmpfs (never written to node disk) and support RBAC restrictions.
+     * @param {string} env - Environment for which the secret is being created.
+     * @param {string} [namespace='default'] - Kubernetes namespace for the secret.
+     * @memberof UnderpostDeploy
+     */
+    configMap(env, namespace = 'default') {
+      const cronDeployId = cronDeployIdResolve() || 'dd-cron';
+      shellExec(`kubectl delete secret underpost-config -n ${namespace} --ignore-not-found`);
+      shellExec(
+        `kubectl create secret generic underpost-config --from-env-file=/home/dd/engine/engine-private/conf/${cronDeployId}/.env.${env} --dry-run=client -o yaml | kubectl apply -f - -n ${namespace}`,
+      );
+    },
+    /**
+     * Switches the traffic for a deployment.
+     * @param {string} deployId - Deployment ID for which the traffic is being switched.
+     * @param {string} env - Environment for which the traffic is being switched.
+     * @param {string} targetTraffic - Target traffic status for the deployment.
+     * @param {number} replicas - Number of replicas for the deployment.
+     * @param {string} [namespace='default'] - Kubernetes namespace for the deployment.
+     * @param {object} options - Options for the traffic switch.
+     * @param {string} options.timeoutResponse - Timeout response setting for the deployment.
+     * @param {string} options.timeoutIdle - Timeout idle setting for the deployment.
+     * @param {string} options.retryCount - Retry count setting for the deployment.
+     * @param {string} options.retryPerTryTimeout - Retry per-try timeout setting for the deployment.
+     * @param {string} [options.imagePullPolicy] - Container imagePullPolicy override; forwarded to the manifest rebuild triggered here.
+     * @memberof UnderpostDeploy
+     */
+    switchTraffic(
+      deployId,
+      env,
+      targetTraffic,
+      replicas = 1,
+      namespace = 'default',
+      options = {
+        timeoutResponse: '',
+        timeoutIdle: '',
+        retryCount: '',
+        retryPerTryTimeout: '',
+        imagePullPolicy: '',
+      },
+    ) {
+      const timeoutFlags = Underpost.deploy.timeoutFlagsFactory(options);
+      const imagePullPolicyFlag = options.imagePullPolicy ? ` --image-pull-policy ${options.imagePullPolicy}` : '';
+
+      shellExec(
+        `node bin deploy --info-router --build-manifest --traffic ${targetTraffic} --replicas ${replicas} --namespace ${namespace}${timeoutFlags}${imagePullPolicyFlag} ${deployId} ${env}`,
+      );
+
+      shellExec(`sudo kubectl apply -f ./engine-private/conf/${deployId}/build/${env}/proxy.yaml -n ${namespace}`);
+
+      const grpcServicePath = `./engine-private/conf/${deployId}/build/${env}/grpc-service.yaml`;
+      if (fs.existsSync(grpcServicePath)) shellExec(`kubectl apply -f ${grpcServicePath} -n ${namespace}`);
+
+      Underpost.env.set(`${deployId}-${env}-traffic`, targetTraffic);
+    },
+
+    /**
+     * Deploys a volume for a deployment.
+     * @param {object} volume - Volume configuration.
+     * @param {string} volume.claimName - Name of the persistent volume claim.
+     * @param {string} volume.volumeMountPath - Mount path of the volume in the container.
+     * @param {string} volume.volumeName - Name of the volume.
+     * @param {object} options - Options for the volume deployment.
+     * @param {string} options.deployId - Deployment ID.
+     * @param {string} options.env - Environment for the deployment.
+     * @param {string} options.version - Version of the deployment.
+     * @param {string} options.namespace - Kubernetes namespace for the deployment.
+     * @param {string} options.nodeName - Node name for the deployment.
+     * @param {string} [options.clusterContext='kind'] - Cluster context type ('kind', 'kubeadm', or 'k3s').
+     * @param {boolean} [options.gitClean=false] - Whether to run git clean on volumeMountPath before copying.
+     * @memberof UnderpostDeploy
+     */
+    deployVolume(
+      volume = { claimName: '', volumeMountPath: '', volumeName: '' },
+      options = {
+        deployId: '',
+        env: '',
+        version: '',
+        namespace: '',
+        nodeName: '',
+        clusterContext: 'kind',
+        gitClean: false,
+      },
+    ) {
+      if (!volume.claimName) {
+        logger.warn('Volume claimName is required to deploy volume', volume);
+        return;
+      }
+      const { deployId, env, version, namespace } = options;
+      const clusterContext = options.clusterContext || 'kind';
+      const pvcId = `${volume.claimName}-${deployId}-${env}-${version}`;
+      const pvId = `${volume.claimName.replace('pvc-', 'pv-')}-${deployId}-${env}-${version}`;
+      const rootVolumeHostPath = `/home/dd/engine/volume/${pvId}`;
+      if (options.gitClean && volume.volumeMountPath) {
+        Underpost.repo.clean({ paths: [volume.volumeMountPath] });
+      }
+      if (options.nodeName) {
+        if (!fs.existsSync(rootVolumeHostPath)) fs.mkdirSync(rootVolumeHostPath, { recursive: true });
+        fs.copySync(volume.volumeMountPath, rootVolumeHostPath);
+      } else if (clusterContext === 'kind') {
+        shellExec(`docker exec -i kind-worker bash -c "mkdir -p ${rootVolumeHostPath}"`);
+        // shellExec(`docker cp ${volume.volumeMountPath} kind-worker:${rootVolumeHostPath}`);
+        shellExec(`tar -C ${volume.volumeMountPath} -c . | docker cp - kind-worker:${rootVolumeHostPath}`);
+        shellExec(
+          `docker exec -i kind-worker bash -c "chown -R 1000:1000 ${rootVolumeHostPath}; chmod -R 755 ${rootVolumeHostPath}"`,
+        );
+      } else {
+        if (!fs.existsSync(rootVolumeHostPath)) fs.mkdirSync(rootVolumeHostPath, { recursive: true });
+        fs.copySync(volume.volumeMountPath, rootVolumeHostPath);
+      }
+      shellExec(`kubectl delete pvc ${pvcId} -n ${namespace} --ignore-not-found`);
+      shellExec(`kubectl delete pv ${pvId} --ignore-not-found`);
+      shellExec(`kubectl apply -f - -n ${namespace} <<EOF
+${Underpost.deploy.persistentVolumeFactory({
+  hostPath: rootVolumeHostPath,
+  pvcId,
+  namespace,
+})}
+EOF
+`);
+    },
+
+    /**
+     * Creates volume mounts and volumes for a deployment.
+     * @param {Array<volume>} volumes - List of volume configurations.
+     * @param {string} volume.volumeName - Name of the volume.
+     * @param {string} volume.volumeMountPath - Mount path of the volume in the container.
+     * @param {string} volume.volumeHostPath - Host path of the volume.
+     * @param {string} volume.volumeType - Type of the volume (e.g. 'Directory').
+     * @param {string|null} volume.claimName - Name of the persistent volume claim (if applicable).
+     * @param {string|null} volume.configMap - Name of the config map (if applicable).
+     * @param {string|null} volume.secret - Name of the Kubernetes Secret (if applicable). Mounts as readOnly.
+     * @param {boolean} [volume.emptyDir=false] - If true, uses an emptyDir volume (writable tmpfs).
+     * @returns {object} - Object containing the rendered volume mounts and volumes.
+     * @memberof UnderpostDeploy
+     */
+    volumeFactory(
+      volumes = [
+        {
+          volumeName: 'volume-name',
+          volumeMountPath: '/path/in/container',
+          volumeHostPath: '/path/on/host',
+          volumeType: 'Directory',
+          claimName: null,
+          configMap: null,
+          version: null,
+        },
+      ],
+    ) {
+      let _volumeMounts = `
+      volumeMounts:`;
+      let _volumes = `
+  volumes:`;
+      volumes.map((volumeData) => {
+        let {
+          volumeName,
+          volumeMountPath,
+          volumeHostPath,
+          volumeType,
+          claimName,
+          configMap,
+          secret,
+          emptyDir,
+          version,
+        } = volumeData;
+        if (version) {
+          volumeName = `${volumeName}-${version}`;
+          claimName = claimName ? `${claimName}-${version}` : null;
+        }
+        _volumeMounts += `
+        - name: ${volumeName}
+          mountPath: ${volumeMountPath}
+${secret ? `          readOnly: true\n` : ''}`;
+
+        _volumes += `
+    - name: ${volumeName}
+ ${
+   emptyDir
+     ? `     emptyDir: {}`
+     : secret
+       ? `     secret:
+        secretName: ${secret}`
+       : configMap
+         ? `     configMap:
+        name: ${configMap}`
+         : claimName
+           ? `     persistentVolumeClaim:
+        claimName: ${claimName}`
+           : `     hostPath:
+        path: ${volumeHostPath}
+        type: ${volumeType}
+`
+ }
+
+  `;
+      });
+      return { render: _volumeMounts + _volumes };
+    },
+
+    /**
+     * Creates a persistent volume and persistent volume claim for a deployment.
+     * @param {object} options - Options for the persistent volume and claim creation.
+     * @param {string} options.hostPath - Host path for the persistent volume.
+     * @param {string} options.pvcId - Persistent volume claim ID.
+     * @param {string} [options.namespace='default'] - Kubernetes namespace for the PVC claimRef.
+     * @returns {string} - YAML configuration for the persistent volume and claim.
+     * @memberof UnderpostDeploy
+     */
+    persistentVolumeFactory({ hostPath, pvcId, namespace = 'default' }) {
+      const pvId = pvcId.replace(/^pvc-/, 'pv-');
+      return `apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ${pvId}
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  claimRef:
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    name: ${pvcId}
+    namespace: ${namespace}
+  hostPath:
+    path: ${hostPath}
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${pvcId}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: manual
+  volumeName: ${pvId}
+  resources:
+    requests:
+      storage: 5Gi`;
+    },
+
+    /**
+     * Checks if a TLS context is valid.
+     * @param {object} options - Options for the check.
+     * @param {string} options.host - Host for which the TLS context is being checked.
+     * @param {string} options.env - Environment for which the TLS context is being checked.
+     * @param {object} options.options - Options for the TLS context check.
+     * @returns {boolean} - True if the TLS context is valid, false otherwise.
+     * @memberof UnderpostDeploy
+     */
+    isValidTLSContext: ({ host, env, options }) =>
+      env === 'production' &&
+      options.cert === true &&
+      (!options.certHosts || options.certHosts.split(',').includes(host)),
+    /**
+     * Monitors the ready status of a deployment.
+     *
+     * Ready signal:
+     *   The orchestrator gate is the Kubernetes pod Ready condition. When the
+     *   container's `readinessProbe` succeeds, kubelet flips
+     *   `status.conditions[Ready]` to True and `checkDeploymentReadyStatus`
+     *   returns the pod in `readyPods`. This is the only required signal — see
+     *   `src/client/public/nexodev/docs/references/Deploy custom instance to K8S.md`.
+     *
+     * Container-status:
+     *   `underpost config get container-status` is read from each pod for both
+     *   the display column and as a second ready gate alongside the K8S Ready
+     *   condition. Both must be satisfied before the monitor exits:
+     *     1. K8S readinessProbe (TCP socket) — ensures the port is bound.
+     *     2. container-status == `<deploy>-<env>-running-deployment` — ensures
+     *        the application has completed its own startup sequence.
+     *   Early-abort on `error` container-status remains in effect.
+     *
+     * @param {string} deployId - Deployment ID for which the ready status is being monitored.
+     * @param {string} env - Environment for which the ready status is being monitored.
+     * @param {string} targetTraffic - Target traffic status for the deployment.
+     * @param {Array<string>} ignorePods - List of pod names to ignore.
+     * @param {string} [namespace='default'] - Kubernetes namespace for the deployment.
+     * @returns {object} - Object containing the ready status of the deployment.
+     * @memberof UnderpostDeploy
+     */
+    async monitorReadyRunner(deployId, env, targetTraffic, ignorePods = [], namespace = 'default') {
+      const delayMs = 1000;
+      const maxIterations = 3000;
+      const deploymentId = `${deployId}-${env}-${targetTraffic}`;
+      const expectedContainerStatus = `${deployId}-${env}-running-deployment`;
+      const tag = `[${deploymentId}]`;
+      const containerStatusDefault = 'waiting for status';
+
+      logger.info('Deployment init', { deployId, env, targetTraffic, namespace });
+
+      // Per-pod cache of last-known container-status (persists across retries)
+      const podStatusCache = new Map();
+
+      const readContainerStatus = (podName) => {
+        try {
+          const raw = shellExec(
+            `sudo kubectl exec ${podName} -n ${namespace} -- sh -c 'underpost config get container-status --plain'`,
+            { silent: true, disableLog: true, stdout: true, silentOnError: true },
+          );
+          const val = raw ? raw.toString().trim() : '';
+          return val && val !== 'undefined' ? val : containerStatusDefault;
+        } catch (_) {
+          // exec failed (e.g. pod not yet running) — preserve last known value
+          return podStatusCache.get(podName) || containerStatusDefault;
+        }
+      };
+
+      for (let i = 0; i < maxIterations; i++) {
+        const result = await Underpost.deploy.checkDeploymentReadyStatus(
+          deployId,
+          env,
+          targetTraffic,
+          ignorePods,
+          namespace,
+        );
+
+        const allPods = [...result.readyPods, ...result.notReadyPods];
+
+        // Update cache with latest status for each pod (informational + error gate)
+        for (const pod of allPods) {
+          if (!pod?.NAME) continue;
+          const status = readContainerStatus(pod.NAME);
+          if (status === 'error') throw new Error(`Pod ${pod.NAME} has error status`);
+          podStatusCache.set(pod.NAME, status);
+        }
+
+        const allPodsK8sReady = allPods.length > 0 && result.notReadyPods.length === 0;
+
+        const allPodsStatusReady =
+          allPods.length > 0 && allPods.every((pod) => podStatusCache.get(pod.NAME) === expectedContainerStatus);
+
+        // Print snapshot for every pod — annotate when container-status hasn't caught
+        // up to the K8S Ready condition yet.
+        for (const pod of allPods) {
+          const status = podStatusCache.get(pod.NAME) || containerStatusDefault;
+          const podStatus = pod.STATUS || 'Unknown';
+          const statusMatchesExpected = status === expectedContainerStatus;
+          const statusDisplay = statusMatchesExpected ? status : `${status} (pending)`;
+
+          console.log(
+            'Target pod:',
+            pod.NAME[pod.NAME.includes('green') ? 'bgGreen' : 'bgBlue'].bold.black,
+            '| Pod status:',
+            podStatus.bold.yellow,
+            '| Runtime status:',
+            statusDisplay.bold.cyan,
+          );
+        }
+
+        // Both K8S readinessProbe AND container-status must be satisfied before
+        // declaring the deployment ready. The TCP probe ensures the port is bound;
+        // container-status == running-deployment ensures the application has
+        // completed its own startup sequence so traffic is not switched prematurely.
+        if (allPodsK8sReady && allPodsStatusReady) {
+          logger.info(`${tag} | All pods Ready (K8S readinessProbe satisfied)`);
+          return result;
+        }
+
+        await timer(delayMs);
+
+        if ((i + 1) % 10 === 0) {
+          logger.info(`${tag} | In progress... iteration ${i + 1}`);
+        }
+      }
+
+      logger.error(`${tag} | Deployment timeout after ${maxIterations} iterations`);
+      throw new Error(
+        `monitorReadyRunner timeout: ${deploymentId} did not become Ready within ${maxIterations}*${delayMs}ms`,
+      );
+    },
+
+    /**
+     * Retrieves the currently loaded images in the Kubernetes cluster.
+     * @param {string} [node='kind-worker'] - Node name to check for loaded images.
+     * @param {object} options - Options for the image retrieval.
+     * @param {boolean} options.spec - Whether to retrieve images from the pod specifications.
+     * @param {string} options.namespace - Kubernetes namespace to filter pods.
+     * @returns {Array<object>} - Array of objects containing pod names and their corresponding images.
+     * @memberof UnderpostDeploy
+     */
+    getCurrentLoadedImages(node = 'kind-worker', options = { spec: false, namespace: '' }) {
+      if (options.spec) {
+        const raw = shellExec(
+          `kubectl get pods ${options.namespace ? `--namespace ${options.namespace}` : `--all-namespaces`} -o=jsonpath='{range .items[*]}{"\\n"}{.metadata.namespace}{"/"}{.metadata.name}{":\\t"}{range .spec.containers[*]}{.image}{", "}{end}{end}'`,
+          {
+            stdout: true,
+            silent: true,
+          },
+        );
+        return raw
+          .split(`\n`)
+          .map((lines) => ({
+            pod: lines.split('\t')[0].replaceAll(':', '').trim(),
+            image: lines.split('\t')[1] ? lines.split('\t')[1].replaceAll(',', '').trim() : null,
+          }))
+          .filter((o) => o.image);
+      }
+      const raw = shellExec(node === 'kind-worker' ? `docker exec -i ${node} crictl images` : `crictl images`, {
+        stdout: true,
+        silent: true,
+      });
+
+      const heads = raw
+        .split(`\n`)[0]
+        .split(' ')
+        .filter((_r) => _r.trim());
+
+      const pods = raw
+        .split(`\n`)
+        .filter((r) => !r.match('IMAGE'))
+        .map((r) => r.split(' ').filter((_r) => _r.trim()));
+
+      const result = [];
+
+      for (const row of pods) {
+        if (row.length === 0) continue;
+        const pod = {};
+        let index = -1;
+        for (const head of heads) {
+          if (head in pod) continue;
+          index++;
+          pod[head] = row[index];
+        }
+        result.push(pod);
+      }
+      return result;
+    },
+
+    /**
+     * Predefined resource templates for Kubernetes deployments.
+     * @memberof UnderpostDeploy
+     */
+    resourcesTemplate: {
+      dev_small: {
+        id: 'dev_small',
+        useCase: 'microservice_development',
+        resources: {
+          requests: {
+            memory: '128Mi',
+            cpu: '250m',
+          },
+          limits: {
+            memory: '512Mi',
+            cpu: '1',
+          },
+        },
+      },
+      prod_moderate: {
+        id: 'prod_moderate',
+        useCase: 'production_moderate',
+        resources: {
+          requests: {
+            memory: '256Mi',
+            cpu: '500m',
+          },
+          limits: {
+            memory: '512Mi',
+            cpu: '1',
+          },
+        },
+      },
+      memory_heavy: {
+        id: 'memory_heavy',
+        useCase: 'memory_intensive_app',
+        resources: {
+          requests: {
+            memory: '512Mi',
+            cpu: '500m',
+          },
+          limits: {
+            memory: '1Gi',
+            cpu: '1',
+          },
+        },
+      },
+      cpu_bound: {
+        id: 'cpu_bound',
+        useCase: 'cpu_intensive_job',
+        resources: {
+          requests: {
+            memory: '256Mi',
+            cpu: '1000m',
+          },
+          limits: {
+            memory: '512Mi',
+            cpu: '2000m',
+          },
+        },
+      },
+    },
+
+    /**
+     * Creates a resource object for Kubernetes deployments.
+     * @param {object} resources - Resource specifications.
+     * @param {string} resources.requestsMemory - Memory request for the container.
+     * @param {string} resources.requestsCpu - CPU request for the container.
+     * @param {string} resources.limitsMemory - Memory limit for the container.
+     * @param {string} resources.limitsCpu - CPU limit for the container.
+     * @returns {object|undefined} - Resource object for Kubernetes deployments or undefined if any resource is missing.
+     * @memberof UnderpostDeploy
+     */
+    resourcesFactory: (
+      resources = {
+        resourceTemplateId: '',
+        requestsMemory: '',
+        requestsCpu: '',
+        limitsMemory: '',
+        limitsCpu: '',
+      },
+    ) => {
+      if (resources) {
+        if (resources.resourceTemplateId)
+          return Underpost.deploy.resourcesTemplate[resources.resourceTemplateId].resources;
+        if (resources.requestsMemory && resources.requestsCpu && resources.limitsMemory && resources.limitsCpu)
+          return {
+            requests: {
+              memory: resources.requestsMemory,
+              cpu: resources.requestsCpu,
+            },
+            limits: {
+              memory: resources.limitsMemory,
+              cpu: resources.limitsCpu,
+            },
+          };
+      }
+      return undefined;
+    },
+
+    /**
+     * Extracts a non-standard `imagePullPolicy` key from an env-resolved
+     * instance lifecycle block (the convention used in `conf.instances.json`,
+     * where `imagePullPolicy` sits alongside `postStart`/`preStop` for
+     * per-instance ergonomics) and returns a clean lifecycle hash that is
+     * safe to splice into the K8S container spec.
+     *
+     * Returns `{ lifecycle, imagePullPolicy }`:
+     *   - `lifecycle` — the input minus `imagePullPolicy`, or `undefined` when
+     *     the resulting block is empty.
+     *   - `imagePullPolicy` — the extracted value, or `undefined` if absent.
+     *
+     * @param {object|undefined} lifecycle - Env-resolved lifecycle block
+     *   (already passed through pickEnv). May be `undefined`.
+     * @returns {{ lifecycle: (object|undefined), imagePullPolicy: (string|undefined) }}
+     * @memberof UnderpostDeploy
+     */
+    extractInstanceImagePullPolicy(lifecycle) {
+      if (!lifecycle || typeof lifecycle !== 'object' || !('imagePullPolicy' in lifecycle)) {
+        return { lifecycle, imagePullPolicy: undefined };
+      }
+      const { imagePullPolicy, ...rest } = lifecycle;
+      return {
+        lifecycle: Object.keys(rest).length > 0 ? rest : undefined,
+        imagePullPolicy,
+      };
+    },
+
+    /**
+     * Generates timeout flags string for deployment commands.
+     * @param {object} options - Options containing timeout settings.
+     * @param {string|number} [options.timeoutResponse] - Timeout response value.
+     * @param {string|number} [options.timeoutIdle] - Timeout idle value.
+     * @param {string|number} [options.retryCount] - Retry count value.
+     * @param {string|number} [options.retryPerTryTimeout] - Retry per try timeout value.
+     * @returns {string} The timeout flags string.
+     * @memberof UnderpostDeploy
+     */
+    timeoutFlagsFactory: (options = {}) => {
+      return (
+        `${options.timeoutResponse ? ` --timeout-response ${options.timeoutResponse}` : ''}` +
+        `${options.timeoutIdle ? ` --timeout-idle ${options.timeoutIdle}` : ''}` +
+        `${options.retryCount || options.retryCount === 0 ? ` --retry-count ${options.retryCount}` : ''}` +
+        `${options.retryPerTryTimeout ? ` --retry-per-try-timeout ${options.retryPerTryTimeout}` : ''}`
+      );
+    },
+  };
+}
+
+export default UnderpostDeploy;

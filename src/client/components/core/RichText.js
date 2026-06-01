@@ -1,0 +1,33 @@
+import { getId, newInstance } from './CommonJs.js';
+import { Modal } from './Modal.js';
+import { s } from './VanillaJs.js';
+class RichText {
+  static Tokens = {};
+  static async instance(options = { id: '', parentIdModal: '' }) {
+    const id = options?.id ? options.id : getId(RichText.Tokens, 'rich-text-');
+    RichText.Tokens[id] = {};
+    setTimeout(() => {
+      const easyMDE = new EasyMDE({
+        element: s(`.${id}`),
+        hideIcons: ['fullscreen', 'side-by-side'],
+        onToggleFullScreen: (onFs) => {
+          if (onFs) {
+            if (options.parentIdModal) {
+            }
+            // Modal.cleanUI();
+          } else {
+            if (options.parentIdModal) {
+            }
+            // Modal.restoreUI();
+          }
+        },
+      });
+      RichText.Tokens[id].easyMDE = easyMDE;
+      // easyMDE.value();
+      // easyMDE.value(val);
+    });
+    return html` <style></style>
+      <div class="in md-container"><textarea class="${id}"></textarea></div>`;
+  }
+}
+export { RichText };

@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey-service
+spec:
+  serviceName: valkey-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valkey-service
+  template:
+    metadata:
+      labels:
+        app: valkey-service
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: valkey-service
+          image: docker.io/valkey/valkey:latest
+          imagePullPolicy: IfNotPresent
+          command: ['valkey-server']
+          args: ['--port', '6379', '--bind', '0.0.0.0', '--protected-mode', 'no']
+          ports:
+            - containerPort: 6379
+          startupProbe:
+            tcpSocket:
+              port: 6379
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 2

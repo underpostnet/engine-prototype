@@ -1,0 +1,2922 @@
+import { getId, newInstance, s4 } from './CommonJs.js';
+import { Draggable } from '@neodrag/vanilla';
+import { append, s, prepend, htmls, sa, getAllChildNodes, isActiveElement } from './VanillaJs.js';
+import { BtnIcon } from './BtnIcon.js';
+import { Responsive } from './Responsive.js';
+import { loggerFactory } from './Logger.js';
+import {
+  Css,
+  ThemeEvents,
+  Themes,
+  ThemesScope,
+  darkTheme,
+  renderStyleTag,
+  renderStatus,
+  renderCssAttr,
+} from './Css.js';
+import {
+  setDocTitle,
+  closeModalRouteChangeEvent,
+  handleModalViewRoute,
+  getProxyPath,
+  setPath,
+  coreUI,
+  sanitizeRoute,
+  getQueryParams,
+  setRouterReady,
+} from './Router.js';
+import { NotificationManager } from './NotificationManager.js';
+import { EventsUI } from './EventsUI.js';
+import { Translate } from './Translate.js';
+import { Input, isTextInputFocused } from './Input.js';
+import { DropDown } from './DropDown.js';
+import { Keyboard } from './Keyboard.js';
+import { Badge } from './Badge.js';
+import { Worker } from './Worker.js';
+import { Scroll } from './Scroll.js';
+import { windowGetH, windowGetW } from './windowGetDimensions.js';
+import { SearchBox } from './SearchBox.js';
+import { createModalEvents } from './ClientEvents.js';
+
+const logger = loggerFactory(import.meta, { trace: true });
+
+/**
+ * @typedef {object} ModalBarButton
+ * @property {string} [label] - Button label HTML
+ * @property {boolean} [disabled] - Whether the button is hidden/disabled
+ * @property {Function} [onClick] - Optional click handler override
+ */
+
+/**
+ * @typedef {object} ModalBarConfig
+ * @property {{ minimize: ModalBarButton, restore: ModalBarButton, maximize: ModalBarButton, close: ModalBarButton, menu: ModalBarButton }} buttons
+ */
+
+/**
+ * @typedef {object} ModalRenderOptions
+ * @property {string} [id=''] - Modal element id/class name. Auto-generated if omitted.
+ * @property {ModalBarConfig} [barConfig={}] - Bar button configuration.
+ * @property {string} [title=''] - Modal title HTML.
+ * @property {string|Function} [html=''] - Modal body HTML or async factory.
+ * @property {string} [handleType='bar'] - Drag handle type ('bar' or default full).
+ * @property {string} [mode=''] - Layout mode: 'view', 'slide-menu', 'slide-menu-right', 'slide-menu-left', 'dropNotification'.
+ * @property {object} [RouterInstance={}] - Router instance for route-aware modals.
+ * @property {string[]} [disableTools=[]] - Tool ids to hide ('app-icon', 'text-box', 'profile', 'center', 'lang', 'theme', 'navigator').
+ * @property {boolean} [observer=false] - Attach a ResizeObserver to the modal element.
+ * @property {boolean} [disableBoxShadow=false] - Remove box shadow from the modal.
+ * @property {boolean} [dragDisabled=false] - Disable dragging.
+ * @property {boolean} [maximize=false] - Immediately maximize the modal after render.
+ * @property {boolean} [disableCenter=false] - Skip auto-centering.
+ * @property {object} [style={}] - Inline style overrides applied via renderStyleTag.
+ * @property {string} [class=''] - Extra CSS class(es) on the modal wrapper.
+ * @property {string} [titleClass=''] - Class for the title element.
+ * @property {string} [btnBarModalClass=''] - Class override for the button bar container.
+ * @property {string} [btnContainerClass=''] - Class for each bar button.
+ * @property {string} [btnIconContainerClass=''] - Class for each bar button inner icon div.
+ * @property {string} [barClass=''] - Class for the top/bottom bar flex row.
+ * @property {string} [barMode=''] - Bar layout variant ('top-bottom-bar').
+ * @property {string} [renderType=''] - Insertion strategy ('prepend' or default append).
+ * @property {string} [selector='body'] - Parent selector for insertion.
+ * @property {string} [slideMenu=''] - Id of the slide-menu modal this view should attach to.
+ * @property {string} [route=''] - URL path segment for view-mode route tracking.
+ * @property {string} [status=''] - Status icon descriptor rendered in the bar.
+ * @property {boolean} [zIndexSync=false] - Enable z-index management for stacked view modals.
+ * @property {boolean} [query=false] - Snapshot the current query string into modal data.
+ * @property {string[]} [homeModals=[]] - Modal ids that belong to the home screen (not closed on home nav).
+ * @property {Function} [titleRender] - Function returning title HTML (takes priority over title string).
+ * @property {Function} [htmlMainBody] - Factory for main-body modal html (slide-menu mode).
+ * @property {Function} [slideMenuTopBarBannerFix] - Async factory for top-bar banner content.
+ * @property {number} [minSearchQueryLength=1] - Minimum search query length.
+ * @property {Function} [onCollapseMenu] - Callback when slide menu collapses.
+ * @property {Function} [onExtendMenu] - Callback when slide menu extends.
+ */
+
+/**
+ * @typedef {object} ModalDataEntry
+ * @property {ModalRenderOptions} options - Original render options.
+ * @property {import('./EventBus.js').EventBus} events - Per-modal event bus backing the listener channels below.
+ *
+ * The `onX` channels are EventBus-backed proxies that preserve the historical
+ * `{ [key]: listener }` map API: assign to register, read+call to invoke a single
+ * listener, `delete` to remove, and `Object.keys` to enumerate registered keys.
+ * @property {Object.<string, Function>} onCloseListener - Close event listeners keyed by id.
+ * @property {Object.<string, Function>} onMenuListener - Menu button event listeners.
+ * @property {Object.<string, Function>} onCollapseMenuListener - Collapse menu listeners.
+ * @property {Object.<string, Function>} onExtendMenuListener - Extend menu listeners.
+ * @property {Object.<string, Function>} onDragEndListener - Drag-end listeners.
+ * @property {Object.<string, Function>} onObserverListener - ResizeObserver listeners.
+ * @property {Object.<string, Function>} onClickListener - Click listeners.
+ * @property {Object.<string, Function>} onExpandUiListener - UI expand/collapse listeners.
+ * @property {Object.<string, Function>} onBarUiOpen - Bar UI open listeners.
+ * @property {Object.<string, Function>} onBarUiClose - Bar UI close listeners.
+ * @property {Object.<string, Function>} onReloadModalListener - Reload listeners.
+ * @property {Object.<string, Function>} onHome - Home navigation listeners.
+ * @property {string[]} homeModals - Home modal ids.
+ * @property {string} [query] - Snapshotted query string.
+ * @property {Function} getTop - Returns computed top offset.
+ * @property {Function} getHeight - Returns computed modal height.
+ * @property {Function} getMenuLeftStyle - Returns slide menu left CSS value.
+ * @property {Function} center - Centers the modal in the viewport.
+ * @property {object} [slideMenu] - Active slide-menu link data.
+ * @property {ResizeObserver} [observer] - Attached ResizeObserver.
+ * @property {Function} [observerCallBack] - ResizeObserver callback.
+ * @property {Function} [setDragInstance] - Updates drag options and re-creates the Draggable.
+ * @property {object} [dragInstance] - Active Draggable instance.
+ * @property {object} [dragOptions] - Current drag configuration.
+ */
+
+class Modal {
+  /** @type {Object.<string, ModalDataEntry>} */
+  static Data = {};
+
+  /**
+   * Bottom offset of the slide-menu area for the given options.
+   * @param {ModalRenderOptions} options
+   * @param {number} [heightDefaultBottomBar=0]
+   * @returns {number}
+   */
+  static getModalTop(options, heightDefaultBottomBar = 0) {
+    return windowGetH() - (options.heightBottomBar ? options.heightBottomBar : heightDefaultBottomBar);
+  }
+
+  /**
+   * Available modal height, accounting for the top/bottom bars when the UI is expanded.
+   * @param {ModalRenderOptions} options
+   * @param {number} [heightDefaultTopBar=50]
+   * @param {number} [heightDefaultBottomBar=0]
+   * @returns {number}
+   */
+  static getModalHeight(options, heightDefaultTopBar = 50, heightDefaultBottomBar = 0) {
+    const barsVisible = s(`.main-body-btn-ui-close`) && !s(`.main-body-btn-ui-close`).classList.contains('hide');
+    return (
+      windowGetH() -
+      (barsVisible
+        ? (options.heightTopBar ? options.heightTopBar : heightDefaultTopBar) +
+          (options.heightBottomBar ? options.heightBottomBar : heightDefaultBottomBar)
+        : 0)
+    );
+  }
+
+  /**
+   * Left CSS value for a slide menu in its open/closed state.
+   * @param {ModalRenderOptions} options
+   * @param {{ originSlideMenuWidth: number, collapseSlideMenuWidth: number }} widths
+   * @param {{ open: boolean }} [ops={ open: false }]
+   * @returns {string}
+   */
+  static getModalMenuLeftStyle(options, { originSlideMenuWidth, collapseSlideMenuWidth }, ops = { open: false }) {
+    return `${
+      options.mode === 'slide-menu-right'
+        ? `${
+            windowGetW() +
+            (ops?.open
+              ? -1 * originSlideMenuWidth +
+                (options.mode === 'slide-menu-right' && s(`.btn-icon-menu-mode-right`).classList.contains('hide')
+                  ? originSlideMenuWidth - collapseSlideMenuWidth
+                  : 0)
+              : originSlideMenuWidth)
+          }px`
+        : `-${ops?.open ? '0px' : originSlideMenuWidth}px`
+    }`;
+  }
+
+  /**
+   * Viewport-centered top/left CSS values for a modal of the given size.
+   * @param {{ width: number, height: number }} param0
+   * @returns {{ top: string, left: string }}
+   */
+  static getModalCenter({ width, height }) {
+    return {
+      top: `${windowGetH() / 2 - height / 2}px`,
+      left: `${windowGetW() / 2 - width / 2}px`,
+    };
+  }
+
+  /**
+   * Create or reload a modal. When the modal already exists in the DOM the
+   * existing instance is reloaded via its onReloadModalListener callbacks.
+   * @param {ModalRenderOptions} options
+   * @returns {Promise<ModalDataEntry & { id: string }>}
+   */
+  static async instance(
+    options = {
+      id: '',
+      barConfig: {},
+      title: '',
+      html: '',
+      handleType: 'bar',
+      mode: '',
+      RouterInstance: {},
+      disableTools: [],
+      observer: false,
+      disableBoxShadow: false,
+      dragDisabled: false,
+      maximize: false,
+      disableCenter: false,
+      style: {},
+      class: '',
+      titleClass: '',
+      barMode: '',
+      route: '',
+      slideMenu: '',
+      zIndexSync: false,
+      query: false,
+      homeModals: [],
+    },
+  ) {
+    const originHeightBottomBar = 50;
+    const originHeightTopBar = 50;
+    options.heightBottomBar = 0;
+    options.heightTopBar = 100;
+    if (options && options.barMode && options.barMode === 'top-bottom-bar') {
+      options.heightTopBar = 50;
+      options.heightBottomBar = 50;
+    }
+    let width = 300;
+    let height = 400;
+    let top = options.style?.top ? options.style.top : 0;
+    let left = options.style?.left ? options.style.left : 0;
+    let transition = `opacity 0.3s, box-shadow 0.3s, bottom 0.3s`;
+    const originSlideMenuWidth = 320;
+    const collapseSlideMenuWidth = 50;
+    let slideMenuWidth = originSlideMenuWidth;
+    const minWidth = width;
+    const heightDefaultTopBar = 50;
+    const heightDefaultBottomBar = 0;
+    const idModal = options.id ? options.id : getId(this.Data, 'modal-');
+    const { bus: eventBus, channels: eventChannels } = createModalEvents();
+    this.Data[idModal] = {
+      options,
+      events: eventBus,
+      ...eventChannels,
+      homeModals: options.homeModals ? options.homeModals : [],
+      query: options.query ? `${window.location.search}` : undefined,
+      getTop: () => Modal.getModalTop(options, heightDefaultBottomBar),
+      getHeight: () => Modal.getModalHeight(options, heightDefaultTopBar, heightDefaultBottomBar),
+      getMenuLeftStyle: (ops = { open: false }) =>
+        Modal.getModalMenuLeftStyle(options, { originSlideMenuWidth, collapseSlideMenuWidth }, ops),
+      center: () => {
+        const { top: centeredTop, left: centeredLeft } = Modal.getModalCenter({ width, height });
+        top = centeredTop;
+        left = centeredLeft;
+      },
+      ...this.Data[idModal],
+    };
+
+    if (options && 'mode' in options) {
+      Modal.Data[idModal][options.mode] = {};
+      switch (options.mode) {
+        case 'view':
+          // if (options && options.slideMenu) s(`.btn-close-${options.slideMenu}`).click();
+          options.zIndexSync = true;
+
+          options.style = { width: '100%', ...options.style, 'min-width': `${minWidth}px` };
+
+          if (Modal.mobileModal()) {
+            options.barConfig.buttons.restore.disabled = true;
+            options.barConfig.buttons.minimize.disabled = true;
+            options.dragDisabled = true;
+            options.style.resize = 'none';
+            setTimeout(() => {
+              s(`.btn-close-modal-menu`).click();
+            });
+          }
+
+          Responsive.onChanged(
+            () => {
+              if (!this.Data[idModal]) return Responsive.offChanged(`view-${idModal}`);
+              if (this.Data[idModal].slideMenu) s(`.${idModal}`).style.height = `${this.Data[idModal].getHeight()}px`;
+            },
+            { key: `view-${idModal}` },
+          );
+          Responsive.triggerChanged(`view-${idModal}`);
+
+          // Handle view mode modal route
+          if (options.route) {
+            handleModalViewRoute({
+              route: options.route,
+              RouterInstance: options.RouterInstance,
+            });
+          }
+
+          break;
+        case 'slide-menu':
+        case 'slide-menu-right':
+        case 'slide-menu-left':
+          (async () => {
+            if (!options.slideMenuTopBarBannerFix) {
+              options.slideMenuTopBarBannerFix = async () => {
+                let style = html``;
+                if (options.barMode === 'top-bottom-bar') {
+                  style = html`<style>
+                    .default-slide-menu-top-bar-fix-logo-container {
+                      width: 50px;
+                      height: 50px;
+                    }
+                    .default-slide-menu-top-bar-fix-logo {
+                      width: 40px;
+                      height: 40px;
+                      padding: 5px;
+                    }
+                    .default-slide-menu-top-bar-fix-title-container-text {
+                      font-size: 26px;
+                      top: 8px;
+                      color: ${darkTheme ? '#ffffff' : '#000000'};
+                    }
+                  </style>`;
+                } else {
+                  style = html`<style>
+                    .default-slide-menu-top-bar-fix-logo-container {
+                      width: 100px;
+                      height: 100px;
+                    }
+                    .default-slide-menu-top-bar-fix-logo {
+                      width: 50px;
+                      height: 50px;
+                      padding: 24px;
+                    }
+                    .default-slide-menu-top-bar-fix-title-container-text {
+                      font-size: 30px;
+                      top: 30px;
+                      color: ${darkTheme ? '#ffffff' : '#000000'};
+                    }
+                  </style>`;
+                }
+                setTimeout(() => {
+                  if (s(`.top-bar-app-icon`) && s(`.top-bar-app-icon`).src) {
+                    s(`.default-slide-menu-top-bar-fix-logo`).src = s(`.top-bar-app-icon`).src;
+                    if (s(`.top-bar-app-icon`).classList.contains('negative-color'))
+                      s(`.default-slide-menu-top-bar-fix-logo`).classList.add('negative-color');
+                    htmls(
+                      `.default-slide-menu-top-bar-fix-title-container`,
+                      html`
+                        <div class="inl default-slide-menu-top-bar-fix-title-container-text">${options.title}</div>
+                      `,
+                    );
+                  } else
+                    htmls(
+                      `.default-slide-menu-top-bar-fix-logo-container`,
+                      html`<div class="abs center">${s(`.action-btn-app-icon-render`).innerHTML}</div>`,
+                    );
+                });
+
+                return html`${style}
+                  <div class="in fll default-slide-menu-top-bar-fix-logo-container">
+                    <img class="default-slide-menu-top-bar-fix-logo in fll" />
+                  </div>
+                  <div class="in fll default-slide-menu-top-bar-fix-title-container"></div>`;
+              };
+            }
+            const { barConfig } = options;
+            options.style = {
+              height: `${windowGetH() - options.heightTopBar - options.heightBottomBar}px`,
+              width: `${slideMenuWidth}px`,
+              // 'overflow-x': 'hidden',
+              // overflow: 'visible', // required for tooltip
+              'z-index': 6,
+              resize: 'none',
+              top: `${options.heightTopBar ? options.heightTopBar : heightDefaultTopBar}px`,
+            };
+            const contentIconClass = 'abs center';
+            top = 'auto';
+            left = Modal.Data[idModal].getMenuLeftStyle();
+            transition = '.3s';
+            options.dragDisabled = true;
+            options.titleClass = 'hide';
+            options.disableCenter = true;
+
+            // barConfig.buttons.maximize.disabled = true;
+            // barConfig.buttons.minimize.disabled = true;
+            // barConfig.buttons.restore.disabled = true;
+            // barConfig.buttons.menu.disabled = true;
+            // barConfig.buttons.close.disabled = true;
+            options.btnBarModalClass = 'hide';
+            Responsive.onChanged(
+              () => {
+                for (const _idModal of Object.keys(this.Data)) {
+                  if (this.Data[_idModal].slideMenu && this.Data[_idModal].slideMenu.id === idModal)
+                    this.Data[_idModal].slideMenu.callBack();
+                }
+                s(`.${idModal}`).style.height = `${Modal.Data[idModal].getHeight()}px`;
+                s(`.${idModal}`).style.left = Modal.Data[idModal].getMenuLeftStyle({
+                  open: s(`.btn-bar-center-icon-menu`).classList.contains('hide') ? true : false,
+                });
+                if (s(`.main-body-top`)) {
+                  if (Modal.mobileModal()) {
+                    if (
+                      s(`.btn-menu-${idModal}`).classList.contains('hide') &&
+                      collapseSlideMenuWidth !== slideMenuWidth
+                    )
+                      s(`.main-body-top`).classList.remove('hide');
+                    if (s(`.btn-close-${idModal}`).classList.contains('hide'))
+                      s(`.main-body-top`).classList.add('hide');
+                  } else if (!s(`.main-body-top`).classList.contains('hide')) s(`.main-body-top`).classList.add('hide');
+                }
+              },
+              { key: `slide-menu-${idModal}` },
+            );
+            barConfig.buttons.menu.onClick = () => {
+              Modal.Data[idModal][options.mode].width = slideMenuWidth;
+              s(`.btn-menu-${idModal}`).classList.add('hide');
+              s(`.btn-close-${idModal}`).classList.remove('hide');
+              // s(`.${idModal}`).style.width = `${this.Data[idModal][options.mode].width}px`;
+              s(`.html-${idModal}`).style.display = 'block';
+              // s(`.title-modal-${idModal}`).style.display = 'block';
+              s(`.main-body-btn-ui-menu-menu`).classList.add('hide');
+              s(`.main-body-btn-ui-menu-close`).classList.remove('hide');
+              if (s(`.btn-bar-center-icon-menu`)) {
+                s(`.btn-bar-center-icon-close`).classList.remove('hide');
+                s(`.btn-bar-center-icon-menu`).classList.add('hide');
+              }
+
+              s(`.main-body-btn-container`).style[
+                true || (options.mode && options.mode.match('right')) ? 'right' : 'left'
+              ] = options.mode && options.mode.match('right') ? `${slideMenuWidth}px` : '0px';
+              if (options.mode === 'slide-menu-right') {
+                s(`.${idModal}`).style.left = `${windowGetW() - originSlideMenuWidth}px`;
+              } else {
+                s(`.${idModal}`).style.left = `0px`;
+              }
+              Responsive.triggerChanged(`slide-menu-${idModal}`);
+            };
+            barConfig.buttons.close.onClick = () => {
+              Modal.Data[idModal][options.mode].width = 0;
+              s(`.btn-close-${idModal}`).classList.add('hide');
+              s(`.btn-menu-${idModal}`).classList.remove('hide');
+              // s(`.${idModal}`).style.width = `${this.Data[idModal][options.mode].width}px`;
+              // s(`.html-${idModal}`).style.display = 'none';
+              // s(`.title-modal-${idModal}`).style.display = 'none';
+              s(`.main-body-btn-ui-menu-close`).classList.add('hide');
+              s(`.main-body-btn-ui-menu-menu`).classList.remove('hide');
+              if (s(`.btn-bar-center-icon-menu`)) {
+                s(`.btn-bar-center-icon-menu`).classList.remove('hide');
+                s(`.btn-bar-center-icon-close`).classList.add('hide');
+              }
+              s(`.main-body-btn-container`).style[
+                true || (options.mode && options.mode.match('right')) ? 'right' : 'left'
+              ] = `${0}px`;
+              if (options.mode === 'slide-menu-right') {
+                s(`.${idModal}`).style.left = `${windowGetW() + originSlideMenuWidth}px`;
+              } else {
+                s(`.${idModal}`).style.left = `-${originSlideMenuWidth}px`;
+              }
+              Responsive.triggerChanged(`slide-menu-${idModal}`);
+            };
+            transition += `, width 0.3s`;
+
+            setTimeout(() => {
+              setTimeout(btnCloseEvent);
+              append(
+                'body',
+                html`
+                  <div
+                    class="abs main-body-btn-container"
+                    style="top: ${options.heightTopBar + 50}px; z-index: 9; ${true ||
+                    (options.mode && options.mode.match('right'))
+                      ? 'right'
+                      : 'left'}: 0px; width: 50px; height: 150px; transition: .3s"
+                  >
+                    <div
+                      class="abs main-body-btn main-body-btn-ui"
+                      style="top: 0px; ${true || (options.mode && options.mode.match('right')) ? 'right' : 'left'}: 0px"
+                    >
+                      <div class="abs center">
+                        <i class="fas fa-caret-down main-body-btn-ui-open hide"></i>
+                        <i class="fas fa-caret-up main-body-btn-ui-close"></i>
+                      </div>
+                    </div>
+                    <div
+                      class="abs main-body-btn main-body-btn-menu"
+                      style="top: 50px; ${true || (options.mode && options.mode.match('right'))
+                        ? 'right'
+                        : 'left'}: 0px"
+                    >
+                      <div class="abs center">
+                        <i class="fa-solid fa-xmark hide main-body-btn-ui-menu-close"></i>
+                        <i class="fa-solid fa-bars main-body-btn-ui-menu-menu"></i>
+                      </div>
+                    </div>
+                    <div
+                      class="abs main-body-btn main-body-btn-bar-custom ${options?.slideMenuTopBarBannerFix
+                        ? ''
+                        : 'hide'}"
+                      style="top: 100px; ${true || (options.mode && options.mode.match('right'))
+                        ? 'right'
+                        : 'left'}: 0px"
+                    >
+                      <div class="abs center">
+                        <i class="fa-solid fa-magnifying-glass main-body-btn-ui-bar-custom-open"></i>
+                        <i class="fa-solid fa-home hide main-body-btn-ui-bar-custom-close"></i>
+                      </div>
+                    </div>
+                  </div>
+                `,
+              );
+
+              s(`.main-body-btn-menu`).onclick = () => {
+                Modal.actionBtnCenter();
+              };
+
+              s(`.main-body-btn-bar-custom`).onclick = () => {
+                if (s(`.main-body-btn-ui-close`).classList.contains('hide')) {
+                  s(`.main-body-btn-ui`).click();
+                }
+                if (s(`.main-body-btn-ui-bar-custom-open`).classList.contains('hide')) {
+                  s(`.main-body-btn-ui-bar-custom-open`).classList.remove('hide');
+                  s(`.main-body-btn-ui-bar-custom-close`).classList.add('hide');
+                  s(`.slide-menu-top-bar-fix`).style.top = '0px';
+                } else {
+                  s(`.main-body-btn-ui-bar-custom-open`).classList.add('hide');
+                  s(`.main-body-btn-ui-bar-custom-close`).classList.remove('hide');
+                  s(`.slide-menu-top-bar-fix`).style.top = '-100px';
+                  s(`.top-bar-search-box-container`).click();
+                }
+                if (Modal.mobileModal()) {
+                  btnCloseEvent();
+                }
+              };
+
+              let _heightTopBar, _heightBottomBar, _topMenu;
+              s(`.main-body-btn-ui`).onclick = () => {
+                if (s(`.main-body-btn-ui-open`).classList.contains('hide')) {
+                  s(`.main-body-btn-ui-open`).classList.remove('hide');
+                  s(`.main-body-btn-ui-close`).classList.add('hide');
+                  _heightTopBar = newInstance(options.heightTopBar);
+                  _heightBottomBar = newInstance(options.heightBottomBar);
+                  _topMenu = newInstance(s(`.modal-menu`).style.top);
+                  options.heightTopBar = 0;
+                  options.heightBottomBar = 0;
+                  s(`.slide-menu-top-bar`).classList.add('hide');
+                  s(`.bottom-bar`).classList.add('hide');
+                  s(`.modal-menu`).style.top = '0px';
+                  s(`.main-body-btn-container`).style.top = '50px';
+                  s(`.main-body`).style.top = '0px';
+                  s(`.main-body`).style.height = `${windowGetH()}px`;
+                  for (const event of Object.keys(Modal.Data[idModal].onBarUiClose))
+                    Modal.Data[idModal].onBarUiClose[event]();
+                } else {
+                  s(`.main-body-btn-ui-close`).classList.remove('hide');
+                  s(`.main-body-btn-ui-open`).classList.add('hide');
+                  options.heightTopBar = _heightTopBar;
+                  options.heightBottomBar = _heightBottomBar;
+                  s(`.modal-menu`).style.top = _topMenu;
+                  s(`.main-body-btn-container`).style.top = `${options.heightTopBar + 50}px`;
+                  s(`.slide-menu-top-bar`).classList.remove('hide');
+                  s(`.bottom-bar`).classList.remove('hide');
+                  s(`.main-body`).style.top = `${options.heightTopBar}px`;
+                  s(`.main-body`).style.height = `${windowGetH() - options.heightTopBar}px`;
+                  for (const event of Object.keys(Modal.Data[idModal].onBarUiOpen))
+                    Modal.Data[idModal].onBarUiOpen[event]();
+                }
+                Responsive.triggerChanged(`slide-menu-modal-menu`);
+                Object.keys(this.Data).map((_idModal) => {
+                  if (this.Data[_idModal].slideMenu) {
+                    if (s(`.btn-maximize-${_idModal}`)) s(`.btn-maximize-${_idModal}`).click();
+                  }
+                });
+                Responsive.triggerChanged(`view-${'main-body'}`);
+                if (Responsive.hasChangedListener(`view-${'bottom-bar'}`))
+                  Responsive.triggerChanged(`view-${'bottom-bar'}`);
+                if (Responsive.hasChangedListener(`view-${'main-body-top'}`))
+                  Responsive.triggerChanged(`view-${'main-body-top'}`);
+                for (const keyEvent of Object.keys(this.Data[idModal].onExpandUiListener)) {
+                  this.Data[idModal].onExpandUiListener[keyEvent](
+                    !s(`.main-body-btn-ui-open`).classList.contains('hide'),
+                  );
+                }
+              };
+              Modal.setTopBannerLink();
+            });
+
+            const inputSearchBoxId = `top-bar-search-box`;
+            append(
+              'body',
+              html` <div class="fix modal slide-menu-top-bar">
+                <div
+                  class="fl top-bar  ${options.barClass ? options.barClass : ''}"
+                  style="height: ${originHeightTopBar}px;"
+                >
+                  ${await BtnIcon.instance({
+                    style: `height: 100%`,
+                    class: 'in fll main-btn-menu action-bar-box action-btn-close hide',
+                    label: html` <div class="${contentIconClass} action-btn-close-render">
+                      <i class="fa-solid fa-xmark"></i>
+                    </div>`,
+                  })}
+                  ${await BtnIcon.instance({
+                    style: `height: 100%`,
+                    class: `in fll main-btn-menu action-bar-box action-btn-app-icon ${
+                      options?.disableTools?.includes('app-icon') ? 'hide' : ''
+                    }`,
+                    label: html` <div class="${contentIconClass} action-btn-app-icon-render"></div>`,
+                  })}
+                  <form
+                    class="in fll top-bar-search-box-container hover ${options?.disableTools?.includes('text-box')
+                      ? 'hide'
+                      : ''}"
+                  >
+                    ${await Input.instance({
+                      id: inputSearchBoxId,
+                      autocomplete: 'off',
+                      placeholder: Modal.mobileModal()
+                        ? Translate.instance('search', '.top-bar-search-box')
+                        : undefined, // html`<i class="fa-solid fa-magnifying-glass"></i> ${Translate.instance('search')}`,
+                      placeholderIcon: html`<div
+                        class="in fll"
+                        style="width: ${originHeightTopBar}px; height: ${originHeightTopBar}px;"
+                      >
+                        <div class="abs center"><i class="fa-solid fa-magnifying-glass"></i></div>
+                        ${!Modal.mobileModal()
+                          ? html` <div
+                              class="inl wfm key-shortcut-container-info"
+                              style="${renderCssAttr({ style: { top: '10px', left: '60px' } })}"
+                            >
+                              ${await Badge.instance({
+                                id: 'shortcut-key-info-search',
+                                text: 'Shift',
+                                classList: 'inl',
+                                style: { 'z-index': 1 },
+                              })}
+                              ${await Badge.instance({
+                                id: 'shortcut-key-info-search',
+                                text: '+',
+                                classList: 'inl',
+                                style: { 'z-index': 1, background: 'none', color: '#5f5f5f' },
+                              })}
+                              ${await Badge.instance({
+                                id: 'shortcut-key-info-search',
+                                text: 'k',
+                                classList: 'inl',
+                                style: { 'z-index': 1 },
+                              })}
+                            </div>`
+                          : ''}
+                      </div>`,
+                      inputClass: 'in fll',
+                      // containerClass: '',
+                    })}
+                  </form>
+                  <div
+                    class="abs top-box-profile-container ${options?.disableTools?.includes('profile') ? 'hide' : ''}"
+                  >
+                    ${await BtnIcon.instance({
+                      style: `height: 100%`,
+                      class: 'in fll session-in-log-in main-btn-menu action-bar-box action-btn-profile-log-in',
+                      label: html` <div class="${contentIconClass} action-btn-profile-log-in-render"></div>`,
+                    })}
+                    ${await BtnIcon.instance({
+                      style: `height: 100%`,
+                      class: 'in fll session-in-log-out main-btn-menu action-bar-box action-btn-profile-log-out',
+                      label: html` <div class="${contentIconClass} action-btn-profile-log-out-render">
+                        <i class="fas fa-user-plus"></i>
+                      </div>`,
+                    })}
+                  </div>
+                </div>
+                ${options?.slideMenuTopBarBannerFix
+                  ? html`<div
+                      class="abs modal slide-menu-top-bar-fix"
+                      style="height: ${options.heightTopBar}px; top: 0px"
+                    >
+                      <a class="a-link-top-banner fl">
+                        <div class="inl">${await options.slideMenuTopBarBannerFix()}</div></a
+                      >
+                    </div>`
+                  : ''}
+              </div>`,
+            );
+            EventsUI.onClick(`.action-btn-profile-log-in`, () => {
+              if (Modal.mobileModal() && s(`.btn-close-search-box-history`)) {
+                s(`.btn-close-search-box-history`).click();
+              }
+              s(`.main-btn-account`).click();
+            });
+            EventsUI.onClick(`.action-btn-profile-log-out`, () => {
+              if (Modal.mobileModal() && s(`.btn-close-search-box-history`)) {
+                s(`.btn-close-search-box-history`).click();
+              }
+              s(`.main-btn-sign-up`).click();
+            });
+            s(`.input-info-${inputSearchBoxId}`).style.textAlign = 'left';
+            htmls(`.input-info-${inputSearchBoxId}`, '');
+            const inputInfoNode = s(`.input-info-${inputSearchBoxId}`).cloneNode(true);
+            s(`.input-info-${inputSearchBoxId}`).remove();
+            {
+              // Inject SearchBox base styles
+              SearchBox.injectStyles();
+
+              const id = 'search-box-history';
+              const searchBoxHistoryId = id;
+              const formDataInfoNode = [
+                {
+                  model: 'search-box',
+                  id: inputSearchBoxId,
+                  rules: [] /*{ type: 'isEmpty' }, { type: 'isEmail' }*/,
+                },
+              ];
+              // Reusable hover/focus controller for search history panel
+              let unbindDocSearch = null;
+              const hoverFocusCtl = EventsUI.HoverFocusController({
+                inputSelector: `.top-bar-search-box-container`,
+                panelSelector: `.${id}`,
+                activeElementId: inputSearchBoxId,
+                onDismiss: () => dismissSearchBox(),
+              });
+              let currentKeyBoardSearchBoxIndex = 0;
+              let results = [];
+
+              const checkHistoryBoxTitleStatus = () => {
+                if (s(`.search-box-result-title`) && s(`.search-box-result-title`).classList) {
+                  if (!s(`.${inputSearchBoxId}`).value.trim()) {
+                    s(`.search-box-result-title`).classList.add('hide');
+                    s(`.search-box-recent-title`).classList.remove('hide');
+                  } else {
+                    s(`.search-box-recent-title`).classList.add('hide');
+                    s(`.search-box-result-title`).classList.remove('hide');
+                  }
+                }
+              };
+
+              const checkShortcutContainerInfoEnabled = () => {
+                if (Modal.mobileModal() || !s(`.key-shortcut-container-info`)) return;
+                if (!s(`.${inputSearchBoxId}`).value) {
+                  s(`.key-shortcut-container-info`).classList.remove('hide');
+                } else s(`.key-shortcut-container-info`).classList.add('hide');
+              };
+
+              const renderSearchResult = async (results, isRecentHistory = false) => {
+                // Check if the search history modal still exists before rendering
+                if (!s(`.html-${searchBoxHistoryId}`)) return;
+
+                htmls(`.html-${searchBoxHistoryId}`, '');
+
+                // Show/hide clear-all button based on whether showing recent history
+                // Use setTimeout to ensure the button is in the DOM after modal renders
+                const updateClearAllBtn = () => {
+                  const clearAllBtn = s(`.btn-search-history-clear-all`);
+                  if (clearAllBtn) {
+                    if (isRecentHistory && results.length > 0) {
+                      clearAllBtn.style.display = 'flex';
+                    } else {
+                      clearAllBtn.style.display = 'none';
+                    }
+                  }
+                };
+                // Try immediately and also with a delay to handle timing
+                updateClearAllBtn();
+                setTimeout(updateClearAllBtn, 50);
+
+                if (results.length === 0) {
+                  append(
+                    `.html-${searchBoxHistoryId}`,
+                    await BtnIcon.instance({
+                      label: html`<i class="fas fa-exclamation-circle"></i> ${Translate.instance('no-result-found')}`,
+                      class: `wfa`,
+                      style: renderCssAttr({
+                        style: {
+                          padding: '3px',
+                          margin: '2px',
+                          'text-align': 'center',
+                          border: 'none',
+                          cursor: 'default',
+                          background: 'none !important',
+                        },
+                      }),
+                    }),
+                  );
+                  return;
+                }
+
+                // Use SearchBox component for rendering results
+                const searchContext = {
+                  RouterInstance: Worker.RouterInstance,
+                  options: options,
+                  isRecentHistory: isRecentHistory, // Flag for delete button visibility
+                  onResultClick: () => {
+                    // Dismiss search box on result click
+                    if (s(`.${searchBoxHistoryId}`)) {
+                      Modal.removeModal(searchBoxHistoryId);
+                    }
+                  },
+                };
+
+                SearchBox.renderResults(results, `html-${searchBoxHistoryId}`, searchContext);
+              };
+
+              const getResultSearchBox = async (validatorData) => {
+                if (!s(`.html-${searchBoxHistoryId}`)) return;
+                const { model, id } = validatorData;
+
+                switch (model) {
+                  case 'search-box':
+                    {
+                      currentKeyBoardSearchBoxIndex = 0;
+                      results = [];
+
+                      const query = s(`.${id}`) ? s(`.${id}`).value : '';
+                      const trimmedQuery = query.trim();
+
+                      // Use SearchBox component for extensible search
+                      const searchContext = {
+                        RouterInstance: Worker.RouterInstance,
+                        options: options,
+                        minQueryLength: options?.minSearchQueryLength || 1, // Allow single character search by default
+                        onResultClick: () => {
+                          // Dismiss search box on result click
+                          if (s(`.${searchBoxHistoryId}`)) {
+                            Modal.removeModal(searchBoxHistoryId);
+                          }
+                        },
+                      };
+
+                      // Check minimum query length (default: 1 character)
+                      const minLength = searchContext.minQueryLength;
+                      if (trimmedQuery.length >= minLength) {
+                        results = await SearchBox.search(trimmedQuery, searchContext);
+                        renderSearchResult(results, false); // Search results - no delete buttons
+                      } else if (trimmedQuery.length === 0) {
+                        // Show recent results from persistent history when query is empty
+                        const recentResults = SearchBox.RecentResults.getAll();
+                        renderSearchResult(recentResults, true); // Recent history - show delete buttons
+                      } else {
+                        // Query is too short - show nothing or a hint
+                        renderSearchResult([], false);
+                      }
+                    }
+                    break;
+
+                  default:
+                    break;
+                }
+              };
+
+              const searchBoxCallBack = async (validatorData) => {
+                const isSearchBoxActiveElement = isActiveElement(inputSearchBoxId);
+                checkHistoryBoxTitleStatus();
+                checkShortcutContainerInfoEnabled();
+                if (!isSearchBoxActiveElement && !hoverFocusCtl.shouldStay()) {
+                  Modal.removeModal(searchBoxHistoryId);
+                  return;
+                }
+                setTimeout(() => {
+                  getResultSearchBox(validatorData);
+
+                  if (
+                    s(`.slide-menu-top-bar-fix`) &&
+                    !s(`.main-body-btn-ui-bar-custom-open`).classList.contains('hide')
+                  ) {
+                    s(`.main-body-btn-bar-custom`).click();
+                  }
+                });
+              };
+
+              const updateSearchBoxValue = (selector) => {
+                if (!selector) {
+                  // Get the currently active search result item
+                  const activeItem = s(`.html-${searchBoxHistoryId} .search-result-item.active-search-result`);
+                  if (activeItem) {
+                    const titleEl = activeItem.querySelector('.search-result-title');
+                    if (titleEl && titleEl.textContent) {
+                      s(`.${inputSearchBoxId}`).value = titleEl.textContent.trim();
+                    }
+                  }
+                } else if (s(selector)) {
+                  const titleEl = s(selector).querySelector('.search-result-title');
+                  if (titleEl && titleEl.textContent) {
+                    s(`.${inputSearchBoxId}`).value = titleEl.textContent.trim();
+                  }
+                }
+                checkHistoryBoxTitleStatus();
+                checkShortcutContainerInfoEnabled();
+              };
+
+              const setSearchValue = (selector) => {
+                // Get all search result items
+                const allItems = sa(`.html-${searchBoxHistoryId} .search-result-item`);
+                if (!allItems || allItems.length === 0) return;
+
+                const activeItem = allItems[currentKeyBoardSearchBoxIndex];
+                if (!activeItem) return;
+
+                const resultId = activeItem.getAttribute('data-result-id');
+                const resultType = activeItem.getAttribute('data-result-type');
+
+                if (resultType === 'route' && results[currentKeyBoardSearchBoxIndex]) {
+                  const result = results[currentKeyBoardSearchBoxIndex];
+                  // Track in persistent history
+                  SearchBox.RecentResults.add(result);
+                  updateSearchBoxValue();
+                  if (s(`.main-btn-${resultId}`)) {
+                    s(`.main-btn-${resultId}`).click();
+                  }
+                } else {
+                  // Track custom provider result in persistent history
+                  if (results[currentKeyBoardSearchBoxIndex]) {
+                    SearchBox.RecentResults.add(results[currentKeyBoardSearchBoxIndex]);
+                  }
+                  // Trigger click on custom result
+                  activeItem.click();
+                }
+                Modal.removeModal(searchBoxHistoryId);
+              };
+              let boxHistoryDelayRender = 0;
+              const searchBoxHistoryOpen = async () => {
+                if (boxHistoryDelayRender) return;
+                if (Modal.mobileModal()) {
+                  btnCloseEvent();
+                }
+                boxHistoryDelayRender = 1000;
+                setTimeout(() => (boxHistoryDelayRender = 0));
+                if (!s(`.${searchBoxHistoryId}`)) {
+                  const { barConfig } = await Themes[Css.currentTheme]();
+                  barConfig.buttons.maximize.disabled = true;
+                  barConfig.buttons.minimize.disabled = true;
+                  barConfig.buttons.restore.disabled = true;
+                  barConfig.buttons.menu.disabled = true;
+                  barConfig.buttons.close.disabled = false;
+
+                  await Modal.instance({
+                    id: searchBoxHistoryId,
+                    barConfig,
+                    title: html`<div
+                      style="display: flex; align-items: center; justify-content: space-between; width: 100%;"
+                    >
+                      <div style="display: flex; align-items: center; gap: 8px;">
+                        <div class="search-box-recent-title">
+                          ${renderViewTitle({
+                            icon: html`<i class="fas fa-history mini-title"></i>`,
+                            text: Translate.instance('recent'),
+                          })}
+                        </div>
+                        <div class="search-box-result-title hide">
+                          ${renderViewTitle({
+                            icon: html`<i class="far fa-list-alt mini-title"></i>`,
+                            text: Translate.instance('results'),
+                          })}
+                        </div>
+                      </div>
+                    </div>`,
+                    html: () => html``,
+                    titleClass: 'mini-title',
+                    style: {
+                      resize: 'none',
+                      'max-width': '450px',
+                      height:
+                        this.mobileModal() && windowGetW() < 445
+                          ? `${windowGetH() - originHeightTopBar}px !important`
+                          : '300px !important',
+                      'z-index': 7,
+                    },
+                    class: 'search-history-modal',
+                    dragDisabled: true,
+                    maximize: true,
+                    barMode: options.barMode,
+                  });
+
+                  // Bind hover/focus and click-outside to dismiss
+                  hoverFocusCtl.bind();
+                  unbindDocSearch = EventsUI.bindDismissOnDocumentClick({
+                    shouldStay: hoverFocusCtl.shouldStay,
+                    onDismiss: () => dismissSearchBox(),
+                    anchors: [`.top-bar-search-box-container`, `.${id}`],
+                  });
+                  // Ensure cleanup when modal closes
+                  Modal.Data[id].onCloseListener[`unbind-doc-${id}`] = () => unbindDocSearch && unbindDocSearch();
+
+                  Modal.MoveTitleToBar(id);
+
+                  // Add styles for inline button layout in the search history modal bar
+                  const styleId = 'search-history-modal-bar-styles';
+                  if (!s(`#${styleId}`)) {
+                    const styleTag = document.createElement('style');
+                    styleTag.id = styleId;
+                    styleTag.textContent = `
+                      .search-history-modal .btn-bar-modal-container .bar-default-modal {
+                        display: flex;
+                        flex-direction: row-reverse;
+                        align-items: center;
+                      }
+                      .search-history-modal .btn-bar-modal-container .btn-modal-default {
+                        display: inline-flex;
+                        align-items: center;
+                        justify-content: center;
+                        float: none;
+                      }
+                      .search-history-modal .html-${searchBoxHistoryId} {
+                        overflow-x: hidden;
+                        box-sizing: border-box;
+                      }
+                      .search-history-modal .html-${searchBoxHistoryId} .search-result-item,
+                      .search-history-modal .html-${searchBoxHistoryId} .search-result-history-item {
+                        box-sizing: border-box;
+                        max-width: 100%;
+                      }
+                    `;
+                    document.head.appendChild(styleTag);
+                  }
+
+                  // Add clear all button to the bar area, before the close button
+                  const clearAllBtnHtml = await BtnIcon.instance({
+                    class: `btn-search-history-clear-all btn-modal-default btn-modal-default-${searchBoxHistoryId}`,
+                    label: html`<i class="fas fa-trash-alt"></i>`,
+                    attrs: `title="Clear all recent items"`,
+                    style: 'padding: 4px 8px; font-size: 12px; display: none;',
+                  });
+
+                  // Insert before close button in the bar (with flex row-reverse, inserting after close button places our button to its left visually)
+                  const closeBtn = s(`.btn-close-${searchBoxHistoryId}`);
+                  if (closeBtn) {
+                    closeBtn.insertAdjacentHTML('afterend', clearAllBtnHtml);
+                  }
+
+                  // Add click handler for clear all history button
+                  const clearAllBtn = s(`.btn-search-history-clear-all`);
+                  if (clearAllBtn) {
+                    clearAllBtn.onclick = (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      // Clear all history from persistent storage
+                      SearchBox.RecentResults.clear();
+                      // Re-render to show empty history (with isRecentHistory true to hide button)
+                      renderSearchResult([], true);
+                    };
+                  }
+
+                  prepend(`.btn-bar-modal-container-${id}`, html`<div class="hide">${inputInfoNode.outerHTML}</div>`);
+                }
+              };
+
+              s('.top-bar-search-box').oninput = () => {
+                searchBoxHistoryOpen();
+                searchBoxCallBack(formDataInfoNode[0]);
+              };
+              s('.top-bar-search-box').onfocus = () => {
+                searchBoxHistoryOpen();
+                searchBoxCallBack(formDataInfoNode[0]);
+              };
+
+              const dismissSearchBox = () => {
+                if (unbindDocSearch) {
+                  try {
+                    unbindDocSearch();
+                  } catch (e) {}
+                }
+                Modal.removeModal(searchBoxHistoryId);
+              };
+              s('.top-bar-search-box').onblur = () => {
+                hoverFocusCtl.checkDismiss();
+              };
+              EventsUI.onClick(`.top-bar-search-box-container`, () => {
+                if (SearchBox.Data.skipOpen) {
+                  SearchBox.Data.skipOpen = false;
+                  return;
+                }
+                searchBoxHistoryOpen();
+                searchBoxCallBack(formDataInfoNode[0]);
+                const inputEl = s(`.${inputSearchBoxId}`);
+                if (inputEl && inputEl.focus) inputEl.focus();
+              });
+
+              const timePressDelay = 100;
+              Keyboard.instanceMultiPressKey({
+                id: 'input-search-shortcut-ArrowUp',
+                keys: ['ArrowUp'],
+                eventCallBack: () => {
+                  if (s(`.${id}`)) {
+                    const allItems = sa(`.html-${searchBoxHistoryId} .search-result-item`);
+                    if (!allItems || allItems.length === 0) return;
+
+                    // Remove active class from current
+                    if (allItems[currentKeyBoardSearchBoxIndex]) {
+                      allItems[currentKeyBoardSearchBoxIndex].classList.remove('active-search-result');
+                    }
+
+                    // Navigate up
+                    if (currentKeyBoardSearchBoxIndex > 0) {
+                      currentKeyBoardSearchBoxIndex--;
+                    } else {
+                      currentKeyBoardSearchBoxIndex = allItems.length - 1;
+                    }
+
+                    // Add active class to new and ensure visibility
+                    if (allItems[currentKeyBoardSearchBoxIndex]) {
+                      allItems[currentKeyBoardSearchBoxIndex].classList.add('active-search-result');
+                      // Use optimized scroll method to ensure item is always visible
+                      const container = s(`.html-${searchBoxHistoryId}`);
+                      if (container) {
+                        SearchBox.scrollIntoViewIfNeeded(allItems[currentKeyBoardSearchBoxIndex], container);
+                      }
+                    }
+                    updateSearchBoxValue();
+                  }
+                },
+                timePressDelay,
+              });
+
+              Keyboard.instanceMultiPressKey({
+                id: 'input-search-shortcut-ArrowDown',
+                keys: ['ArrowDown'],
+                eventCallBack: () => {
+                  if (s(`.${id}`)) {
+                    const allItems = sa(`.html-${searchBoxHistoryId} .search-result-item`);
+                    if (!allItems || allItems.length === 0) return;
+
+                    // Remove active class from current
+                    if (allItems[currentKeyBoardSearchBoxIndex]) {
+                      allItems[currentKeyBoardSearchBoxIndex].classList.remove('active-search-result');
+                    }
+
+                    // Navigate down
+                    if (currentKeyBoardSearchBoxIndex < allItems.length - 1) {
+                      currentKeyBoardSearchBoxIndex++;
+                    } else {
+                      currentKeyBoardSearchBoxIndex = 0;
+                    }
+
+                    // Add active class to new and ensure visibility
+                    if (allItems[currentKeyBoardSearchBoxIndex]) {
+                      allItems[currentKeyBoardSearchBoxIndex].classList.add('active-search-result');
+                      // Use optimized scroll method to ensure item is always visible
+                      const container = s(`.html-${searchBoxHistoryId}`);
+                      if (container) {
+                        SearchBox.scrollIntoViewIfNeeded(allItems[currentKeyBoardSearchBoxIndex], container);
+                      }
+                    }
+                    updateSearchBoxValue();
+                  }
+                },
+                timePressDelay,
+              });
+
+              s(`.top-bar-search-box-container`).onsubmit = (e) => {
+                e.preventDefault();
+                setSearchValue();
+              };
+            }
+            setTimeout(async () => {
+              // clone and change position
+
+              // s(`.btn-close-${idModal}`);
+              // s(`.btn-menu-${idModal}`);
+              if (originHeightBottomBar === 0) {
+                const btnCloseNode = s(`.btn-close-${idModal}`).cloneNode(true);
+                s(`.btn-close-${idModal}`).remove();
+                s(`.top-bar`).appendChild(btnCloseNode);
+                s(`.btn-close-${idModal}`).onclick = btnCloseEvent;
+
+                const btnMenuNode = s(`.btn-menu-${idModal}`).cloneNode(true);
+                s(`.btn-menu-${idModal}`).remove();
+                s(`.top-bar`).appendChild(btnMenuNode);
+                s(`.btn-menu-${idModal}`).onclick = btnMenuEvent;
+              }
+
+              // const titleNode = s(`.title-modal-${idModal}`).cloneNode(true);
+              // s(`.title-modal-${idModal}`).remove();
+              // s(`.top-bar`).appendChild(titleNode);
+
+              s(`.slide-menu-top-bar`).style.zIndex = 7;
+
+              // s('body').removeChild(`.${idModal}`);
+              // while (s(`.top-modal`).firstChild) s(`.top-modal`).removeChild(s(`.top-modal`).firstChild);
+
+              {
+                const { barConfig } = await Themes[Css.currentTheme]();
+                barConfig.buttons.maximize.disabled = true;
+                barConfig.buttons.minimize.disabled = true;
+                barConfig.buttons.restore.disabled = true;
+                barConfig.buttons.menu.disabled = true;
+                barConfig.buttons.close.disabled = true;
+                const id = 'main-body';
+                await Modal.instance({
+                  id,
+                  barConfig,
+                  html: options.htmlMainBody ? options.htmlMainBody : () => html``,
+                  titleClass: 'hide',
+                  style: {
+                    // overflow: 'hidden',
+                    background: 'none',
+                    resize: 'none',
+                    'min-width': `${minWidth}px`,
+                    width: '100%',
+                    // border: '3px solid red',
+                  },
+                  dragDisabled: true,
+                  maximize: true,
+                  slideMenu: 'modal-menu',
+                  barMode: options.barMode,
+                  observer: true,
+                  disableBoxShadow: true,
+                });
+                const maxWidthInputSearchBox = 450;
+                const paddingInputSearchBox = 5;
+                const paddingRightSearchBox = 50;
+                Responsive.onChanged(
+                  () => {
+                    if (!this.Data[id] || !s(`.${id}`)) return Responsive.offChanged(`view-${id}`);
+                    const widthInputSearchBox =
+                      windowGetW() > maxWidthInputSearchBox ? maxWidthInputSearchBox : windowGetW();
+                    s(`.top-bar-search-box-container`).style.width = `${
+                      widthInputSearchBox - originHeightTopBar - paddingRightSearchBox - 1
+                    }px`;
+                    s(`.top-bar-search-box`).style.width = `${
+                      widthInputSearchBox -
+                      originHeightTopBar * 2 -
+                      paddingRightSearchBox -
+                      paddingInputSearchBox * 2 /*padding input*/ -
+                      10 /* right-margin */
+                    }px`;
+                    s(`.top-bar-search-box`).style.top = `${
+                      (originHeightTopBar - s(`.top-bar-search-box`).clientHeight) / 2
+                    }px`;
+                    if (this.Data[id].slideMenu) s(`.${id}`).style.height = `${Modal.Data[id].getHeight()}px`;
+                  },
+                  { key: `view-${id}` },
+                );
+                Responsive.triggerChanged(`view-${id}`);
+                Keyboard.instanceMultiPressKey({
+                  id: 'input-search-shortcut-k',
+                  keys: [
+                    ['Shift', 'k'],
+                    ['Alt', 'k'],
+                  ],
+                  eventCallBack: () => {
+                    if (isTextInputFocused()) return;
+                    if (s(`.top-bar-search-box`)) {
+                      if (s(`.main-body-btn-ui-close`).classList.contains('hide')) {
+                        s(`.main-body-btn-ui-open`).click();
+                      }
+                      s(`.top-bar-search-box`).blur();
+                      s(`.top-bar-search-box`).focus();
+                      s(`.top-bar-search-box`).select();
+                    }
+                  },
+                });
+              }
+
+              {
+                const { barConfig } = await Themes[Css.currentTheme]();
+                barConfig.buttons.maximize.disabled = true;
+                barConfig.buttons.minimize.disabled = true;
+                barConfig.buttons.restore.disabled = true;
+                barConfig.buttons.menu.disabled = true;
+                barConfig.buttons.close.disabled = true;
+                const id = 'bottom-bar';
+                if (!this.Data[idModal].homeModals) this.Data[idModal].homeModals = [];
+                if (!this.Data[idModal].homeModals.includes(id)) {
+                  this.Data[idModal].homeModals.push(id);
+                }
+                const html = async () => html`
+                  <style>
+                    .top-bar-search-box-container {
+                      height: 100%;
+                      overflow: hidden;
+                    }
+                    .bottom-bar {
+                      overflow: hidden;
+                    }
+                    .action-bar-box {
+                      margin: 0px;
+                      border: none;
+                      width: 50px;
+                      min-height: 50px;
+                    }
+                  </style>
+                  <div
+                    class="fl ${options.barClass ? options.barClass : ''}"
+                    style="height: ${originHeightBottomBar}px;"
+                  >
+                    ${await BtnIcon.instance({
+                      style: `height: 100%`,
+                      class: `in fl${
+                        options.mode === 'slide-menu-right' ? 'r' : 'l'
+                      } main-btn-menu action-bar-box action-btn-center ${
+                        options?.disableTools?.includes('center') ? 'hide' : ''
+                      }`,
+                      label: html`
+                        <div class="${contentIconClass}">
+                          <i class="far fa-square btn-bar-center-icon-square hide"></i>
+                          <span class="btn-bar-center-icon-close hide">${barConfig.buttons.close.label}</span>
+                          <span class="btn-bar-center-icon-menu">${barConfig.buttons.menu.label}</span>
+                        </div>
+                      `,
+                    })}
+                    ${await BtnIcon.instance({
+                      style: `height: 100%`,
+                      class: `in flr main-btn-menu action-bar-box action-btn-lang ${
+                        options?.disableTools?.includes('lang') ? 'hide' : ''
+                      }`,
+                      label: html` <div class="${contentIconClass} action-btn-lang-render"></div>`,
+                    })}
+                    ${await BtnIcon.instance({
+                      style: `height: 100%`,
+                      class: `in flr main-btn-menu action-bar-box action-btn-theme ${
+                        options?.disableTools?.includes('theme') ? 'hide' : ''
+                      }`,
+                      label: html` <div class="${contentIconClass} action-btn-theme-render"></div>`,
+                    })}
+                    ${await BtnIcon.instance({
+                      style: `height: 100%`,
+                      class: `in flr main-btn-menu action-bar-box action-btn-home ${
+                        options?.disableTools?.includes('navigator') ? 'hide' : ''
+                      }`,
+                      label: html` <div class="${contentIconClass}"><i class="fas fa-home"></i></div>`,
+                    })}
+                    ${await BtnIcon.instance({
+                      style: `height: 100%`,
+                      class: `in flr main-btn-menu action-bar-box action-btn-right ${
+                        options?.disableTools?.includes('navigator') ? 'hide' : ''
+                      }`,
+                      label: html` <div class="${contentIconClass}"><i class="fas fa-chevron-right"></i></div>`,
+                    })}
+                    ${await BtnIcon.instance({
+                      style: `height: 100%`,
+                      class: `in flr main-btn-menu action-bar-box action-btn-left ${
+                        options?.disableTools?.includes('navigator') ? 'hide' : ''
+                      }`,
+                      label: html`<div class="${contentIconClass}"><i class="fas fa-chevron-left"></i></div>`,
+                    })}
+                  </div>
+                `;
+                if (options.heightBottomBar === 0 && options.heightTopBar > 0) {
+                  append(`.slide-menu-top-bar`, html` <div class="in ${id}">${await html()}</div>`);
+                } else {
+                  await Modal.instance({
+                    id,
+                    barConfig,
+                    html,
+                    titleClass: 'hide',
+                    style: {
+                      resize: 'none',
+                      height: `${options.heightBottomBar}px`,
+                      'min-width': `${minWidth}px`,
+                      'z-index': 7,
+                      // bottom: '0px !important',
+                      width: `${windowGetW()}px`,
+                      top: `${Modal.Data['modal-menu'].getTop()}px`,
+                    },
+                    dragDisabled: true,
+                    disableCenter: true,
+                    // maximize: true,
+                    barMode: options.barMode,
+                  });
+                  Responsive.onChanged(
+                    () => {
+                      if (!this.Data[id] || !s(`.${id}`)) return Responsive.offChanged(`view-${id}`);
+                      //  <div class="in fll right-offset-menu-bottom-bar" style="height: 100%"></div>
+                      // s(`.right-offset-menu-bottom-bar`).style.width = `${windowGetW() - slideMenuWidth}px`;
+                      s(`.${id}`).style.top = `${Modal.Data['modal-menu'].getTop()}px`;
+                      s(`.${id}`).style.width = `${windowGetW()}px`;
+                    },
+                    { key: `view-${id}` },
+                  );
+                  // Responsive.Event[`view-${id}`]();
+                }
+                EventsUI.onClick(`.action-btn-left`, (e) => {
+                  e.preventDefault();
+                  window.history.back();
+                });
+                EventsUI.onClick(`.action-btn-center`, (e) => {
+                  e.preventDefault();
+                  Modal.actionBtnCenter();
+                });
+                EventsUI.onClick(`.action-btn-right`, (e) => {
+                  e.preventDefault();
+                  window.history.forward();
+                });
+                EventsUI.onClick(`.action-btn-home`, async () => {
+                  await Modal.onHomeRouterEvent();
+                  subMenuHandler(Object.keys(options.RouterInstance.Routes()));
+                  Object.keys(this.Data[idModal].onHome).map((keyListener) => this.Data[idModal].onHome[keyListener]());
+                });
+                EventsUI.onClick(`.action-btn-app-icon`, () => s(`.action-btn-home`).click());
+                Keyboard.instanceMultiPressKey({
+                  id: 'input-shortcut-global-escape',
+                  keys: ['Escape'],
+                  eventCallBack: () => {
+                    if (s(`.btn-close-${this.currentTopModalId}`)) s(`.btn-close-${this.currentTopModalId}`).click();
+                  },
+                });
+              }
+
+              {
+                ThemeEvents['action-btn-theme'] = async () => {
+                  htmls(
+                    `.action-btn-theme-render`,
+                    html` ${darkTheme ? html` <i class="fas fa-moon"></i>` : html`<i class="far fa-sun"></i>`}`,
+                  );
+                  if (s(`.slide-menu-top-bar-fix`)) {
+                    htmls(
+                      `.slide-menu-top-bar-fix`,
+                      html`<a class="a-link-top-banner fl">${await options.slideMenuTopBarBannerFix()}</a>`,
+                    );
+                    Modal.setTopBannerLink();
+                  }
+                };
+                ThemeEvents['action-btn-theme']();
+
+                EventsUI.onClick(`.action-btn-theme`, async () => {
+                  const themePair = ThemesScope.find((t) => t.theme === Css.currentTheme).themePair;
+                  const theme = themePair ? themePair : ThemesScope.find((t) => t.dark === !darkTheme).theme;
+                  if (s(`.dropdown-option-${theme}`))
+                    DropDown.Tokens['settings-theme'].onClickEvents[`dropdown-option-${theme}`]();
+                  else await Themes[theme]();
+                });
+                if (!(ThemesScope.find((t) => t.dark) && ThemesScope.find((t) => !t.dark))) {
+                  s(`.action-btn-theme`).classList.add('hide');
+                }
+              }
+
+              {
+                htmls(`.action-btn-lang-render`, html` ${s('html').lang}`);
+                // old method
+                // EventsUI.onClick(`.action-btn-lang`, () => {
+                //   let lang = 'en';
+                //   if (s('html').lang === 'en') lang = 'es';
+                //   if (s(`.dropdown-option-${lang}`))
+                //     DropDown.Tokens['settings-lang'].onClickEvents[`dropdown-option-${lang}`]();
+                //   else Translate.renderLang(lang);
+                // });
+
+                // Open lightweight empty modal on language button, with shared dismiss logic
+                EventsUI.onClick(
+                  `.action-btn-lang`,
+                  async () => {
+                    const id = 'action-btn-lang-modal';
+                    if (s(`.${id}`)) {
+                      return s(`.btn-close-${id}`).click();
+                    }
+                    const { barConfig } = await Themes[Css.currentTheme]();
+                    barConfig.buttons.maximize.disabled = true;
+                    barConfig.buttons.minimize.disabled = true;
+                    barConfig.buttons.restore.disabled = true;
+                    barConfig.buttons.menu.disabled = true;
+                    barConfig.buttons.close.disabled = false;
+                    await Modal.instance({
+                      id,
+                      barConfig,
+                      title: html`${renderViewTitle({
+                        icon: html`<i class="fas fa-language mini-title"></i>`,
+                        text: Translate.instance('select lang'),
+                      })}`,
+                      html: async () => html`${await Translate.RenderSetting('action-drop-modal' + id)}`,
+                      titleClass: 'mini-title',
+                      style: {
+                        resize: 'none',
+                        width: '100% !important',
+                        height: '350px !important',
+                        'max-width': '350px !important',
+                        'z-index': 7,
+                      },
+                      dragDisabled: true,
+                      maximize: true,
+                      barMode: options.barMode,
+                    });
+
+                    // Move title inside the bar container to align with control buttons
+                    Modal.MoveTitleToBar(id);
+
+                    // Position the language selection modal relative to the language button
+                    Modal.positionRelativeToAnchor({
+                      modalSelector: `.${id}`,
+                      anchorSelector: '.action-btn-lang',
+                      align: 'right',
+                      offset: { x: 0, y: 6 },
+                      autoVertical: true,
+                    });
+
+                    // Hover/focus controller uses the button as input anchor
+                    const hoverFocusCtl = EventsUI.HoverFocusController({
+                      inputSelector: `.action-btn-lang`,
+                      panelSelector: `.${id}`,
+                      onDismiss: () => Modal.removeModal(id),
+                    });
+                    hoverFocusCtl.bind();
+                    const unbindDoc = EventsUI.bindDismissOnDocumentClick({
+                      shouldStay: hoverFocusCtl.shouldStay,
+                      onDismiss: () => Modal.removeModal(id),
+                      anchors: [`.action-btn-lang`, `.${id}`],
+                    });
+                    Modal.Data[id].onCloseListener[`unbind-doc-${id}`] = () => unbindDoc();
+                  },
+                  { context: 'modal', noGate: true, noLoading: true },
+                );
+              }
+
+              {
+                const { barConfig } = await Themes[Css.currentTheme]();
+                barConfig.buttons.maximize.disabled = true;
+                barConfig.buttons.minimize.disabled = true;
+                barConfig.buttons.restore.disabled = true;
+                barConfig.buttons.menu.disabled = true;
+                barConfig.buttons.close.disabled = true;
+                const id = 'main-body-top';
+                await Modal.instance({
+                  id,
+                  barConfig,
+                  html: () => html``,
+                  titleClass: 'hide',
+                  class: 'hide',
+                  style: {
+                    // overflow: 'hidden',
+                    resize: 'none',
+                    'min-width': `${minWidth}px`,
+                    'z-index': 5,
+                    background: `rgba(61, 61, 61, 0.5)`,
+                    // border: '3px solid red',
+                  },
+                  dragDisabled: true,
+                  maximize: true,
+                  barMode: options.barMode,
+                });
+
+                Responsive.onChanged(
+                  () => {
+                    if (!this.Data[id] || !s(`.${id}`)) return Responsive.offChanged(`view-${id}`);
+                    s(`.${id}`).style.height =
+                      s(`.main-body-btn-ui-close`).classList.contains('hide') &&
+                      s(`.btn-restore-${id}`).style.display !== 'none'
+                        ? `${windowGetH()}px`
+                        : `${Modal.Data[id].getHeight()}px`;
+
+                    if (
+                      s(`.main-body-btn-ui-close`).classList.contains('hide') &&
+                      s(`.btn-restore-${id}`).style.display !== 'none'
+                    ) {
+                      s(`.${id}`).style.top = '0px';
+                    } else {
+                      s(`.${id}`).style.top = `${options.heightTopBar ? options.heightTopBar : heightDefaultTopBar}px`;
+                    }
+                  },
+                  { key: `view-${id}` },
+                );
+                Responsive.triggerChanged(`view-${id}`);
+
+                s(`.main-body-top`).onclick = () => s(`.btn-close-modal-menu`).click();
+              }
+
+              await NotificationManager.RenderBoard(options);
+
+              const { removeEvent } = Scroll.setEvent('.main-body', async (payload) => {
+                // console.warn('scroll', payload);
+                if (payload.scrollTop > 100) {
+                  if (!s(`.main-body-btn-ui-close`).classList.contains('hide')) s(`.main-body-btn-ui-close`).click();
+
+                  removeEvent();
+                }
+              });
+              setTimeout(window.onresize);
+              setRouterReady();
+            });
+          })();
+          break;
+
+        case 'dropNotification':
+          (() => {
+            setTimeout(() => {
+              s(`.${idModal}`).style.top = 'auto';
+              s(`.${idModal}`).style.left = 'auto';
+              s(`.${idModal}`).style.height = 'auto';
+              s(`.${idModal}`).style.position = 'absolute';
+              let countDrop = 0;
+              Object.keys(this.Data)
+                .reverse()
+                .map((_idModal) => {
+                  if (this.Data[_idModal][options.mode]) {
+                    s(`.${_idModal}`).style.bottom = `${countDrop * s(`.${_idModal}`).clientHeight * 1.05}px`;
+                    countDrop++;
+                  }
+                });
+            });
+          })();
+          break;
+
+        default:
+          break;
+      }
+    }
+
+    if (options.zIndexSync) this.zIndexSync({ idModal });
+
+    if (s(`.${idModal}`)) {
+      for (const event of Object.keys(Modal.Data[idModal].onReloadModalListener))
+        await Modal.Data[idModal].onReloadModalListener[event]();
+
+      s(`.btn-maximize-${idModal}`).click();
+      return;
+    }
+
+    if (idModal !== 'main-body' && options.mode !== 'view' && !options.disableCenter) Modal.Data[idModal].center();
+
+    const render = html` <style class="style-${idModal}">
+        .${idModal} {
+          width: ${width}px;
+          height: ${height}px;
+          top: ${top};
+          left: ${left};
+          overflow: auto; /* resizable required */
+          resize: both; /* resizable required */
+          transition: ${transition};
+          opacity: 0;
+          z-index: 1;
+        }
+        .bar-default-modal-${idModal} {
+          top: 0px;
+          left: 0px;
+          z-index: 3;
+        }
+
+        .modal-html-${idModal} {
+        }
+
+        .btn-modal-default-${idModal} {
+        }
+        .modal-handle-${idModal} {
+          width: 90%;
+          height: 90%;
+          top: 5%;
+          left: 5%;
+        }
+        .sub-menu-title-container-${idModal},
+        .nav-path-container-${idModal} {
+          top: 0px;
+          left: 0px;
+          width: 200px;
+          height: 50px;
+          overflow: hidden;
+          font-size: 20px;
+          cursor: default;
+        }
+        .nav-path-display-${idModal} {
+          font-size: 11px;
+          width: 100%;
+          top: 35px;
+          left: 37px;
+        }
+        .nav-title-display-${idModal} {
+          font-size: 19px;
+          width: 100%;
+          top: 13px;
+          left: 13px;
+        }
+      </style>
+      ${renderStyleTag(`style-${idModal}`, `.${idModal}`, options)}
+      <div
+        class="fix ${options && options.class ? options.class : ''} modal ${options.disableBoxShadow
+          ? ''
+          : 'box-shadow'} ${idModal === 'main-body' ? `${idModal} modal-home` : idModal}"
+      >
+        <div class="abs modal-handle-${idModal}"></div>
+        <div class="in modal-html-${idModal}">
+          <div class="stq bar-default-modal bar-default-modal-${idModal}">
+            <div
+              class="fl btn-bar-modal-container btn-bar-modal-container-${idModal} ${options?.btnBarModalClass
+                ? options.btnBarModalClass
+                : ''}"
+            >
+              <div class="btn-bar-modal-container-render-${idModal}"></div>
+              <div class="in flr bar-default-modal" style="z-index: 1">
+                ${await BtnIcon.instance({
+                  class: `btn-minimize-${idModal} btn-modal-default btn-modal-default-${idModal} ${
+                    options?.btnContainerClass ? options.btnContainerClass : ''
+                  } ${options?.barConfig?.buttons?.minimize?.disabled ? 'hide' : ''}`,
+                  label: html`<div class="${options?.btnIconContainerClass ? options.btnIconContainerClass : ''}">
+                    ${options?.barConfig?.buttons?.minimize?.label ? options.barConfig.buttons.minimize.label : html`_`}
+                  </div>`,
+                })}
+                ${await BtnIcon.instance({
+                  class: `btn-restore-${idModal} btn-modal-default btn-modal-default-${idModal} ${
+                    options?.btnContainerClass ? options.btnContainerClass : ''
+                  } ${options?.barConfig?.buttons?.restore?.disabled ? 'hide' : ''}`,
+                  label: html`<div class="${options?.btnIconContainerClass ? options.btnIconContainerClass : ''}">
+                    ${options?.barConfig?.buttons?.restore?.label ? options.barConfig.buttons.restore.label : html`□`}
+                  </div>`,
+                  style: 'display: none',
+                })}
+                ${await BtnIcon.instance({
+                  class: `btn-maximize-${idModal} btn-modal-default btn-modal-default-${idModal} ${
+                    options?.btnContainerClass ? options.btnContainerClass : ''
+                  } ${options?.barConfig?.buttons?.maximize?.disabled ? 'hide' : ''}`,
+                  label: html`<div class="${options?.btnIconContainerClass ? options.btnIconContainerClass : ''}">
+                    ${options?.barConfig?.buttons?.maximize?.label ? options.barConfig.buttons.maximize.label : html`▢`}
+                  </div>`,
+                })}
+                ${await BtnIcon.instance({
+                  class: `btn-close-${idModal} btn-modal-default btn-modal-default-${idModal} ${
+                    options?.btnContainerClass ? options.btnContainerClass : ''
+                  } ${options?.barConfig?.buttons?.close?.disabled ? 'hide' : ''}`,
+                  label: html`<div class="${options?.btnIconContainerClass ? options.btnIconContainerClass : ''}">
+                    ${options?.barConfig?.buttons?.close?.label ? options.barConfig.buttons.close.label : html`X`}
+                  </div>`,
+                })}
+                ${await BtnIcon.instance({
+                  class: `btn-menu-${idModal} btn-modal-default btn-modal-default-${idModal} ${
+                    options?.btnContainerClass ? options.btnContainerClass : ''
+                  } ${options?.barConfig?.buttons?.menu?.disabled ? 'hide' : ''}`,
+                  label: html`<div class="${options?.btnIconContainerClass ? options.btnIconContainerClass : ''}">
+                    ${options?.barConfig?.buttons?.menu?.label ? options.barConfig.buttons.menu.label : html`≡`}
+                  </div>`,
+                })}
+              </div>
+            </div>
+            ${options && options.status
+              ? html` <div class="abs modal-icon-container">${renderStatus(options.status)}</div> `
+              : ''}
+            <div
+              class="inl title-modal-${idModal} ${options && options.titleClass
+                ? options.titleClass
+                : 'title-main-modal'}"
+            >
+              ${options && options.titleRender ? options.titleRender() : options.title ? options.title : ''}
+            </div>
+          </div>
+
+          <div class="in html-${idModal}">
+            ${options.mode && options.mode.match('slide-menu')
+              ? html`<div
+                  class="stq modal"
+                  style="${renderCssAttr({ style: { height: '50px', 'z-index': 1, top: '0px' } })}"
+                >
+                  ${await BtnIcon.instance({
+                    style: renderCssAttr({ style: { height: '100%', color: '#5f5f5f' } }),
+                    class: `in flr main-btn-menu action-bar-box btn-icon-menu-mode`,
+                    label: html` <div class="abs center">
+                      <i
+                        class="fas fa-caret-right btn-icon-menu-mode-right ${options.mode && options.mode.match('right')
+                          ? ''
+                          : 'hide'}"
+                      ></i
+                      ><i
+                        class="fas fa-caret-left btn-icon-menu-mode-left  ${options.mode && options.mode.match('right')
+                          ? 'hide'
+                          : ''}"
+                      ></i>
+                    </div>`,
+                  })}
+                  ${await BtnIcon.instance({
+                    style: renderCssAttr({ style: { height: '100%', color: '#5f5f5f' } }),
+                    class: `in flr main-btn-menu action-bar-box btn-icon-menu-back hide`,
+                    label: html`<div class="abs center"><i class="fas fa-undo-alt"></i></div>`,
+                  })}
+                  <div class="abs sub-menu-title-container-${idModal} ac">
+                    <div class="abs nav-title-display-${idModal}">
+                      <!-- <i class="fas fa-home"></i> ${Translate.instance('home')} -->
+                    </div>
+                  </div>
+                  <div class="abs nav-path-container-${idModal} ahc bold">
+                    <div class="abs nav-path-display-${idModal}"><!-- ${location.pathname} --></div>
+                  </div>
+                </div>`
+              : ''}
+            ${options && options.html ? (typeof options.html === 'function' ? await options.html() : options.html) : ''}
+          </div>
+        </div>
+      </div>`;
+    const selector = options && options.selector ? options.selector : 'body';
+    if (options) {
+      switch (options.renderType) {
+        case 'prepend':
+          prepend(selector, render);
+          break;
+        default:
+          append(selector, render);
+          break;
+      }
+    } else append(selector, render);
+    let handle = [s(`.bar-default-modal-${idModal}`), s(`.modal-handle-${idModal}`), s(`.modal-html-${idModal}`)];
+    if (options && 'handleType' in options) {
+      switch (options.handleType) {
+        case 'bar':
+          handle = [s(`.bar-default-modal-${idModal}`)];
+
+          break;
+
+        default:
+          break;
+      }
+    }
+    switch (options.mode) {
+      case 'slide-menu':
+      case 'slide-menu-right':
+      case 'slide-menu-left':
+        const backMenuButtonEvent = async () => {
+          // htmls(`.nav-title-display-${'modal-menu'}`, html`<i class="fas fa-home"></i> ${Translate.instance('home')}`);
+          htmls(`.nav-title-display-${'modal-menu'}`, html``);
+          htmls(`.nav-path-display-${idModal}`, '');
+          s(`.btn-icon-menu-back`).classList.add('hide');
+          // sa(`.main-btn-menu`).forEach((el) => {
+          //   el.classList.remove('hide');
+          // });
+        };
+        s(`.main-btn-home`).onclick = async () => {
+          // await this.onHomeRouterEvent();
+          s(`.action-btn-home`).click();
+        };
+        EventsUI.onClick(`.btn-icon-menu-back`, backMenuButtonEvent);
+        EventsUI.onClick(`.btn-icon-menu-mode`, () => {
+          if (s(`.btn-icon-menu-mode-right`).classList.contains('hide')) {
+            s(`.btn-icon-menu-mode-right`).classList.remove('hide');
+            s(`.btn-icon-menu-mode-left`).classList.add('hide');
+          } else {
+            s(`.btn-icon-menu-mode-left`).classList.remove('hide');
+            s(`.btn-icon-menu-mode-right`).classList.add('hide');
+          }
+          if (slideMenuWidth === originSlideMenuWidth) {
+            slideMenuWidth = collapseSlideMenuWidth;
+            s(`.${idModal}`).style.width = `${slideMenuWidth}px`;
+            sa(`.menu-label-text`).forEach((el) => el.classList.add('hide'));
+            s(`.main-body-btn-container`).style[
+              true || (options.mode && options.mode.match('right')) ? 'right' : 'left'
+            ] = options.mode && options.mode.match('right') ? `${slideMenuWidth}px` : '0px';
+            sa(`.handle-btn-container`).forEach((el) => el.classList.add('hide'));
+            if (options.onCollapseMenu) options.onCollapseMenu();
+            s(`.sub-menu-title-container-${'modal-menu'}`).classList.add('hide');
+            s(`.nav-path-container-${'modal-menu'}`).classList.add('hide');
+            // Shrink any already-open submenu containers to icon-only width
+            Object.keys(Modal.subMenuBtnClass).forEach((subMenuId) => {
+              const container = s(`.menu-btn-container-children-${subMenuId}`);
+              if (container && container.style.height && container.style.height !== '0px')
+                container.style.width = `${collapseSlideMenuWidth}px`;
+            });
+            Object.keys(this.Data[idModal].onCollapseMenuListener).map((keyListener) =>
+              this.Data[idModal].onCollapseMenuListener[keyListener](),
+            );
+          } else {
+            slideMenuWidth = originSlideMenuWidth;
+            s(`.${idModal}`).style.width = `${slideMenuWidth}px`;
+            sa(`.menu-label-text`).forEach((el) => el.classList.remove('hide'));
+            s(`.main-body-btn-container`).style[
+              true || (options.mode && options.mode.match('right')) ? 'right' : 'left'
+            ] = options.mode && options.mode.match('right') ? `${slideMenuWidth}px` : '0px';
+            sa(`.handle-btn-container`).forEach((el) => el.classList.remove('hide'));
+
+            Modal.menuTextLabelAnimation(idModal);
+
+            if (options.onExtendMenu) options.onExtendMenu();
+            s(`.sub-menu-title-container-${'modal-menu'}`).classList.remove('hide');
+            s(`.nav-path-container-${'modal-menu'}`).classList.remove('hide');
+            // Expand any already-open submenu containers back to full width
+            Object.keys(Modal.subMenuBtnClass).forEach((subMenuId) => {
+              const container = s(`.menu-btn-container-children-${subMenuId}`);
+              if (container && container.style.height && container.style.height !== '0px')
+                container.style.width = `${originSlideMenuWidth}px`;
+            });
+            Object.keys(this.Data[idModal].onExtendMenuListener).map((keyListener) =>
+              this.Data[idModal].onExtendMenuListener[keyListener](),
+            );
+          }
+          Modal.Data[idModal][options.mode].width = slideMenuWidth;
+          Responsive.triggerChanged(`slide-menu-${idModal}`);
+        });
+
+        break;
+
+      default:
+        break;
+    }
+    // Track drag position for consistency
+    let dragPosition = { x: 0, y: 0 };
+
+    // Initialize drag options with proper bounds and smooth transitions
+    let dragOptions = {
+      handle: handle,
+      bounds: {
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+      },
+      preventDefault: true,
+      position: { x: 0, y: 0 },
+      onDragStart: () => {
+        const modal = s(`.${idModal}`);
+        if (!modal) return false; // Prevent drag if modal not found
+
+        // Store current position
+        const computedStyle = window.getComputedStyle(modal);
+        const matrix = new DOMMatrixReadOnly(computedStyle.transform);
+        dragPosition = {
+          x: matrix.m41 || 0,
+          y: matrix.m42 || 0,
+        };
+
+        modal.style.transition = 'none';
+        modal.style.willChange = 'transform';
+        return true; // Allow drag to start
+      },
+      onDrag: (data) => {
+        // Update position based on drag delta
+        dragPosition = { x: data.x, y: data.y };
+      },
+      onDragEnd: () => {
+        const modal = s(`.${idModal}`);
+        if (!modal) return;
+
+        modal.style.willChange = '';
+        modal.style.transition = transition;
+
+        // Update drag instance with current position
+        if (dragInstance) {
+          dragInstance.updateOptions({
+            position: dragPosition,
+          });
+        }
+
+        // Notify listeners
+        Object.keys(this.Data[idModal].onDragEndListener || {}).forEach((keyListener) => {
+          this.Data[idModal].onDragEndListener[keyListener]?.();
+        });
+      },
+    };
+
+    let dragInstance = null;
+
+    // Initialize or update drag instance
+    const setDragInstance = () => {
+      if (options?.dragDisabled) {
+        if (dragInstance) {
+          dragInstance.destroy();
+          dragInstance = null;
+        }
+        return null;
+      }
+
+      const modal = s(`.${idModal}`);
+      if (!modal) {
+        console.warn(`Modal element .${idModal} not found for drag initialization`);
+        return null;
+      }
+
+      // Ensure the modal has position: absolute for proper dragging
+      if (window.getComputedStyle(modal).position !== 'absolute') {
+        modal.style.position = 'absolute';
+      }
+
+      // Clean up existing instance
+      if (dragInstance) {
+        dragInstance.destroy();
+      }
+
+      try {
+        // Create new instance with updated options
+        dragInstance = new Draggable(modal, dragOptions);
+        return dragInstance;
+      } catch (error) {
+        console.error('Failed to initialize draggable:', error);
+        return null;
+      }
+    };
+
+    // Expose method to update drag options
+    this.Data[idModal].setDragInstance = (updateDragOptions) => {
+      if (updateDragOptions) {
+        dragOptions = { ...dragOptions, ...updateDragOptions };
+      }
+      dragInstance = setDragInstance();
+      this.Data[idModal].dragInstance = dragInstance;
+      this.Data[idModal].dragOptions = dragOptions;
+    };
+    // Initialize modal with proper transitions
+    const modal = s(`.${idModal}`);
+    if (modal) {
+      // Initial state
+      modal.style.transition = 'opacity 0.15s ease, transform 0.3s ease';
+      modal.style.opacity = '0';
+
+      // Trigger fade-in after a small delay to allow initial render
+      requestAnimationFrame(() => {
+        if (!modal) return;
+        modal.style.opacity = '1';
+
+        // Set final transition after initial animation completes
+        setTimeout(() => {
+          if (modal) {
+            modal.style.transition = transition;
+
+            // Initialize drag after transitions are set
+            if (!options.dragDisabled) {
+              setDragInstance();
+              if (!options.mode) {
+                dragInstance.updateOptions({
+                  position: { x: 0, y: 0 },
+                  disabled: false, // Ensure drag is enabled after restore
+                });
+              }
+            }
+          }
+        }, 150);
+      });
+    }
+
+    const btnCloseEvent = () => {
+      Object.keys(this.Data[idModal].onCloseListener).map((keyListener) =>
+        this.Data[idModal].onCloseListener[keyListener](),
+      );
+      if (options && 'barConfig' in options && options.barConfig.buttons.close.onClick)
+        return options.barConfig.buttons.close.onClick();
+      s(`.${idModal}`).style.opacity = '0';
+      if (this.Data[idModal].observer) {
+        this.Data[idModal].observer.disconnect();
+        // this.Data[idModal].observer.unobserve();
+      }
+      setTimeout(() => {
+        if (!s(`.${idModal}`)) return;
+        this.removeModal(idModal);
+        // Handle modal route change
+        closeModalRouteChangeEvent({ closedId: idModal });
+        // history.back();
+      }, 300);
+    };
+    s(`.btn-close-${idModal}`).onclick = btnCloseEvent;
+
+    // Minimize button handler
+    s(`.btn-minimize-${idModal}`).onclick = () => {
+      const modal = s(`.${idModal}`);
+      if (!modal) return;
+
+      if (options.slideMenu) {
+        delete this.Data[idModal].slideMenu;
+      }
+
+      // Keep drag enabled when minimized
+      if (dragInstance) {
+        dragInstance.updateOptions({ disabled: false });
+      }
+
+      // Set up transition
+      modal.style.transition = 'height 0.3s ease, transform 0.3s ease';
+
+      // Update button states
+      s(`.btn-minimize-${idModal}`).style.display = 'none';
+      s(`.btn-maximize-${idModal}`).style.display = null;
+      s(`.btn-restore-${idModal}`).style.display = null;
+
+      // Collapse to header height
+      const header = s(`.bar-default-modal-${idModal}`);
+      if (header) {
+        modal.style.height = `${header.clientHeight}px`;
+        modal.style.overflow = 'hidden';
+      }
+
+      // Restore transition after animation
+      setTimeout(() => {
+        if (modal) {
+          modal.style.transition = transition;
+        }
+      }, 300);
+    };
+    // Restore button handler
+    s(`.btn-restore-${idModal}`).onclick = () => {
+      const modal = s(`.${idModal}`);
+      if (!modal) return;
+
+      if (options.slideMenu) {
+        delete this.Data[idModal].slideMenu;
+      }
+
+      // Re-enable dragging
+      if (dragInstance) {
+        dragInstance.updateOptions({ disabled: false });
+      }
+
+      // Set up transition
+      modal.style.transition = 'all 0.3s ease';
+
+      // Update button states
+      s(`.btn-restore-${idModal}`).style.display = 'none';
+      s(`.btn-minimize-${idModal}`).style.display = null;
+      s(`.btn-maximize-${idModal}`).style.display = null;
+
+      // Restore original dimensions and position
+      this.Data[idModal].center();
+      modal.style.transform = '';
+      modal.style.height = `${height}px`;
+      modal.style.left = left;
+      modal.style.top = top;
+      modal.style.width = `${width}px`;
+      modal.style.overflow = '';
+
+      // Re-enable drag after restore
+      if (dragInstance) {
+        dragInstance.updateOptions({
+          position: { x: 0, y: 0 },
+          disabled: false, // Ensure drag is enabled after restore
+        });
+      }
+      setTimeout(() => (s(`.${idModal}`) ? (s(`.${idModal}`).style.transition = transition) : null), 300);
+    };
+    s(`.btn-maximize-${idModal}`).onclick = () => {
+      const modal = s(`.${idModal}`);
+      if (!modal) return;
+
+      // Disable drag when maximizing
+      if (dragInstance) {
+        dragInstance.updateOptions({ disabled: true });
+      }
+
+      modal.style.transition = '0.3s';
+      setTimeout(() => (modal ? (modal.style.transition = transition) : null), 300);
+
+      s(`.btn-maximize-${idModal}`).style.display = 'none';
+      s(`.btn-restore-${idModal}`).style.display = null;
+      s(`.btn-minimize-${idModal}`).style.display = null;
+      modal.style.transform = null;
+
+      if (options.slideMenu) {
+        const idSlide = this.Data[options.slideMenu]['slide-menu']
+          ? 'slide-menu'
+          : this.Data[options.slideMenu]['slide-menu-right']
+            ? 'slide-menu-right'
+            : 'slide-menu-left';
+        const callBack = () => {
+          s(`.${idModal}`).style.transition = '0.3s';
+          s(`.${idModal}`).style.width = `${windowGetW() - this.Data[options.slideMenu][idSlide].width}px`;
+          s(`.${idModal}`).style.left =
+            idSlide === 'slide-menu-right' ? `0px` : `${this.Data[options.slideMenu][idSlide].width}px`;
+          setTimeout(() => (s(`.${idModal}`) ? (s(`.${idModal}`).style.transition = transition) : null), 300);
+        };
+
+        callBack();
+        this.Data[idModal].slideMenu = {
+          callBack,
+          id: options.slideMenu,
+        };
+        Responsive.onChanged(
+          () => {
+            setTimeout(() => {
+              if (!s(`.${idModal}`) || !s(`.main-body-btn-ui-close`)) return;
+              if (s(`.btn-restore-${idModal}`) && s(`.btn-restore-${idModal}`).style.display !== 'none') {
+                s(`.${idModal}`).style.height = s(`.main-body-btn-ui-close`).classList.contains('hide')
+                  ? `${windowGetH()}px`
+                  : `${Modal.Data[idModal].getHeight()}px`;
+              }
+              s(`.${idModal}`).style.top = s(`.main-body-btn-ui-close`).classList.contains('hide')
+                ? `0px`
+                : `${options.heightTopBar ? options.heightTopBar : heightDefaultTopBar}px`;
+            });
+          },
+          { key: 'h-ui-hide-' + idModal },
+        );
+        Responsive.triggerChanged('h-ui-hide-' + idModal);
+      } else {
+        Responsive.offChanged('h-ui-hide-' + idModal);
+        s(`.${idModal}`).style.width = '100%';
+        s(`.${idModal}`).style.height = '100%';
+        s(`.${idModal}`).style.top = `${options.heightTopBar ? options.heightTopBar : heightDefaultTopBar}px`;
+        s(`.${idModal}`).style.left = `0px`;
+      }
+      dragInstance = setDragInstance();
+    };
+
+    const btnMenuEvent = () => {
+      Modal.menuTextLabelAnimation(idModal);
+      Object.keys(this.Data[idModal].onMenuListener).map((keyListener) =>
+        this.Data[idModal].onMenuListener[keyListener](),
+      );
+      if (options && 'barConfig' in options && options.barConfig.buttons.menu.onClick)
+        options.barConfig.buttons.menu.onClick();
+    };
+    s(`.btn-menu-${idModal}`).onclick = btnMenuEvent;
+
+    dragInstance = setDragInstance();
+    if (options && options.maximize) s(`.btn-maximize-${idModal}`).click();
+    if (options.observer) {
+      this.Data[idModal].observerCallBack = () => {
+        // logger.info('ResizeObserver', `.${idModal}`, s(`.${idModal}`).offsetWidth, s(`.${idModal}`).offsetHeight);
+        if (this.Data[idModal] && this.Data[idModal].onObserverListener)
+          Object.keys(this.Data[idModal].onObserverListener).map((eventKey) =>
+            this.Data[idModal].onObserverListener[eventKey]({
+              width: s(`.${idModal}`).offsetWidth,
+              height: s(`.${idModal}`).offsetHeight,
+            }),
+          );
+        else console.warn('observer not found', idModal);
+      };
+      this.Data[idModal].observer = new ResizeObserver(this.Data[idModal].observerCallBack);
+      this.Data[idModal].observer.observe(s(`.${idModal}`));
+      setTimeout(this.Data[idModal].observerCallBack);
+    }
+    // cancel: [cancel1, cancel2]
+    s(`.${idModal}`).onclick = () => {
+      this.Data[idModal]?.onClickListener
+        ? Object.keys(this.Data[idModal].onClickListener).map((keyListener) =>
+            this.Data[idModal].onClickListener[keyListener](),
+          )
+        : null;
+    };
+    return {
+      id: idModal,
+      ...this.Data[idModal],
+    };
+  }
+
+  /** @type {Object.<string, object>} */
+  static subMenuBtnClass = {};
+
+  /** Navigate to the home route and close all non-home modals. */
+  static onHomeRouterEvent = async () => {
+    // 1. Get list of modals to close.
+    const modalsToClose = Object.keys(Modal.Data).filter((idModal) => {
+      const modal = Modal.Data[idModal];
+      if (!modal) return false;
+      // Don't close the core UI elements
+
+      if (coreUI.find((id) => idModal.startsWith(id))) {
+        return false;
+      }
+      // Don't close modals that are part of the "home" screen itself
+      const homeModals = Modal.Data['modal-menu']?.homeModals || [];
+      if (homeModals.includes(idModal)) {
+        return false;
+      }
+      return true;
+    });
+
+    // 2. Navigate to home first, creating a new history entry.
+    setPath(`${getProxyPath()}${location.search ?? ''}${location.hash ?? ''}`);
+    setDocTitle();
+
+    // 3. Close the modals without them affecting the URL.
+    for (const id of modalsToClose) {
+      Modal.removeModal(id);
+    }
+
+    // 4. Finally, handle UI cleanup for the slide-menu.
+
+    if (s(`.nav-title-display-modal-menu`)) htmls(`.nav-title-display-modal-menu`, '');
+    if (s(`.nav-path-display-modal-menu`)) htmls(`.nav-path-display-modal-menu`, '');
+    if (s(`.btn-icon-menu-back`)) s(`.btn-icon-menu-back`).classList.add('hide');
+    // sa(`.main-btn-menu`).forEach((el) => {
+    //   el.classList.remove('hide');
+    // });
+
+    // And close the slide menu if it's open
+    if (s(`.btn-close-modal-menu`) && !s(`.btn-close-modal-menu`).classList.contains('hide')) {
+      s(`.btn-close-modal-menu`).click();
+    }
+  };
+
+  /** @type {string} */
+  static currentTopModalId = '';
+
+  /**
+   * Synchronise z-index for view modals, promoting the given modal to top.
+   * @param {{ idModal: string }} param0
+   */
+  static zIndexSync({ idModal }) {
+    setTimeout(() => {
+      if (!this.Data[idModal]) return;
+      const cleanTopModal = () => {
+        Object.keys(this.Data).map((_idModal) => {
+          if (this.Data[_idModal].options.zIndexSync && s(`.${_idModal}`)) s(`.${_idModal}`).style.zIndex = '3';
+        });
+      };
+      const setTopModal = () => {
+        if (s(`.${idModal}`)) {
+          this.setTopModalCallback(idModal);
+        } else setTimeout(setTopModal, 100);
+      };
+      cleanTopModal();
+      setTopModal();
+      this.Data[idModal].onClickListener[`${idModal}-z-index`] = () => {
+        if (s(`.${idModal}`) && s(`.${idModal}`).style.zIndex === '3') {
+          if (this.Data[idModal].options.route)
+            setPath(
+              `${getProxyPath()}${this.Data[idModal].options.route}${location.search ?? ''}${location.hash ?? ''}`,
+            );
+          cleanTopModal();
+          setTopModal();
+        }
+      };
+    });
+  }
+
+  /**
+   * @param {string} idModal
+   */
+  static setTopModalCallback(idModal) {
+    s(`.${idModal}`).style.zIndex = '4';
+    this.currentTopModalId = `${idModal}`;
+  }
+
+  /** @returns {boolean} True when the viewport is considered mobile-sized. */
+  static mobileModal = () => windowGetW() < 600 || windowGetH() < 600;
+
+  /**
+   * @param {{ idModal: string, html: string }} param0
+   */
+  static writeHTML = ({ idModal, html }) => htmls(`.html-${idModal}`, html);
+
+  /**
+   * Update an existing modal's content and/or title.
+   * @param {{ idModal: string, html?: string, title?: string }} param0
+   * @returns {Promise<boolean>}
+   */
+  static async updateModal({ idModal, html, title }) {
+    if (!this.Data[idModal] || !s(`.${idModal}`)) {
+      console.warn(`Modal ${idModal} not found for update`);
+      return false;
+    }
+
+    // Update modal content
+    if (html) {
+      this.writeHTML({ idModal, html });
+    }
+
+    // Update modal title if provided
+    if (title) {
+      const titleElement = s(`.${idModal} .modal-title`);
+      if (titleElement) {
+        titleElement.innerHTML = title;
+      }
+    }
+
+    // Trigger reload listeners
+    if (this.Data[idModal].onReloadModalListener) {
+      for (const event of Object.keys(this.Data[idModal].onReloadModalListener)) {
+        await this.Data[idModal].onReloadModalListener[event]();
+      }
+    }
+
+    return true;
+  }
+
+  /** @returns {string|undefined} Id of the first open view-mode modal, or undefined. */
+  static viewModalOpen() {
+    return Object.keys(this.Data).find((idModal) => s(`.${idModal}`) && this.Data[idModal].options.mode === 'view');
+  }
+
+  /**
+   * Remove a modal element and its style tags, and delete its data entry.
+   * @param {string} idModal
+   */
+  static removeModal(idModal) {
+    if (!s(`.${idModal}`)) return;
+    s(`.${idModal}`).remove();
+    sa(`.style-${idModal}`).forEach((element) => {
+      element.remove();
+    });
+    delete this.Data[idModal];
+  }
+
+  /**
+   * Render a confirmation dialog and return a promise resolving to the user's choice.
+   * @param {{ id: string, html: Function, icon?: string, disableBtnCancel?: boolean }} options
+   * @returns {Promise<{ status: 'confirm'|'cancelled' }>}
+   */
+  static async RenderConfirm(options) {
+    const { id } = options;
+    append(
+      'body',
+      html`
+        <div
+          class="fix background-confirm-modal-${id}"
+          style="${renderCssAttr({
+            style: {
+              'z-index': '10',
+              background: 'rgba(0,0,0,0.5)',
+              width: '100%',
+              height: '100%',
+              top: '0px',
+              left: '0px',
+              transition: '0.3s',
+              opacity: '1',
+            },
+          })}"
+        ></div>
+      `,
+    );
+    const removeBackgroundConfirmModal = () => {
+      s(`.background-confirm-modal-${id}`).style.opacity = '0';
+      setTimeout(() => {
+        s(`.background-confirm-modal-${id}`).remove();
+      });
+    };
+
+    return new Promise(async (resolve, reject) => {
+      const { barConfig } = await Themes[Css.currentTheme]();
+      barConfig.buttons.maximize.disabled = true;
+      barConfig.buttons.minimize.disabled = true;
+      barConfig.buttons.restore.disabled = true;
+      barConfig.buttons.menu.disabled = true;
+      barConfig.buttons.close.disabled = false;
+      const htmlRender = html`
+        <br />
+        <div class="in section-mp" style="font-size: 40px; text-align: center">
+          ${options.icon ? options.icon : html` <i class="fas fa-question-circle"></i>`}
+        </div>
+        ${await options.html()}
+        <div class="in section-mp">
+          ${await BtnIcon.instance({
+            class: `in section-mp form-button btn-confirm-${id}`,
+            label: Translate.instance('confirm'),
+            type: 'submit',
+            style: `margin: auto`,
+          })}
+        </div>
+        <div class="in section-mp ${options.disableBtnCancel ? 'hide' : ''}">
+          ${await BtnIcon.instance({
+            class: `in section-mp form-button btn-cancel-${id}`,
+            label: Translate.instance('cancel'),
+            type: 'submit',
+            style: `margin: auto`,
+          })}
+        </div>
+      `;
+      await Modal.instance({
+        id,
+        barConfig,
+        titleClass: 'hide',
+        style: {
+          width: '300px',
+          height: '400px',
+          overflow: 'hidden',
+          'z-index': '11',
+          resize: 'none',
+        },
+        dragDisabled: true,
+        ...options,
+        html: htmlRender,
+      });
+
+      const end = () => {
+        removeBackgroundConfirmModal();
+        Modal.removeModal(id);
+      };
+      barConfig.buttons.close.onClick = () => {
+        end();
+        resolve({ status: 'cancelled' });
+      };
+      s(`.background-confirm-modal-${id}`).onclick = () => {
+        end();
+        resolve({ status: 'cancelled' });
+      };
+      s(`.btn-cancel-${id}`).onclick = () => {
+        end();
+        resolve({ status: 'cancelled' });
+      };
+      s(`.btn-confirm-${id}`).onclick = () => {
+        end();
+        resolve({ status: 'confirm' });
+      };
+    });
+  }
+
+  /** @type {string} */
+  static labelSelectorTopOffsetStartAnimation = `-40px`;
+
+  /** @type {string} */
+  static labelSelectorTopOffsetEndAnimation = `-3px`;
+
+  /**
+   * Animate slide-menu labels into view.
+   * @param {string} idModal - The slide-menu modal id.
+   * @param {string} [subMenuId] - If provided, animate only this sub-menu.
+   */
+  static menuTextLabelAnimation = (idModal, subMenuId) => {
+    if (
+      !s(
+        `.btn-icon-menu-mode-${Modal.Data[idModal].options.mode === 'slide-menu-right' ? 'left' : 'right'}`,
+      ).classList.contains('hide')
+    ) {
+      return;
+    }
+    const btnSelector = `.main-btn-menu`;
+    const labelSelector = `.menu-label-text`;
+
+    const _data = subMenuId
+      ? {
+          [subMenuId]: Modal.subMenuBtnClass[subMenuId],
+        }
+      : { ...Modal.subMenuBtnClass, _: { btnSelector, labelSelector } };
+
+    for (const keyDataBtn of Object.keys(_data)) {
+      const { labelSelector, top } = _data[keyDataBtn];
+      if (top)
+        setTimeout(() => {
+          top();
+        });
+      sa(labelSelector).forEach((el) => {
+        if (!el.classList.contains('hide')) el.classList.add('hide');
+        el.style.transition = null;
+      });
+
+      setTimeout(() => {
+        sa(labelSelector).forEach((el) => {
+          el.classList.remove('hide');
+          el.style.transition = null;
+        });
+        sa(labelSelector).forEach((el) => {
+          el.style.top = Modal.labelSelectorTopOffsetStartAnimation;
+        });
+      }, 300);
+      setTimeout(() => {
+        sa(labelSelector).forEach((el) => {
+          el.style.top = Modal.labelSelectorTopOffsetEndAnimation;
+        });
+      }, 400);
+    }
+  };
+
+  /**
+   * Builds submenu item HTML using the canonical BtnIcon pattern.
+   * Centralises the item-rendering contract so individual submenu owners (e.g. Docs)
+   * only need to supply data — not layout concerns.
+   * @param {string} subMenuId - Submenu identifier (e.g. 'docs')
+   * @param {Array<{type:string, icon:string, text:string, url:function|string}>} items
+   * @param {Object} [options]
+   * @param {function} [options.subMenuIcon] - Optional icon override per item type
+   * @returns {Promise<string>} Rendered HTML string
+   */
+  static buildSubMenuItemsHtml = async (subMenuId, items = [], options = {}) => {
+    let result = '';
+    const _menuMode = Modal.Data['modal-menu']?.options?.mode;
+    const _tooltipSide = options.tooltipSide || (_menuMode === 'slide-menu-right' ? 'right' : 'left');
+    for (const item of items) {
+      const tabHref = typeof item.url === 'function' ? item.url() : item.url || '';
+      const icon =
+        options.subMenuIcon && typeof options.subMenuIcon === 'function' ? options.subMenuIcon(item.type) : item.icon;
+      result += html`${await BtnIcon.instance({
+        class: `in wfa main-btn-menu submenu-btn btn-${subMenuId} btn-${subMenuId}-${item.type}`,
+        label: html`<span class="inl menu-btn-icon">${icon}</span
+          ><span class="menu-label-text menu-label-text-${subMenuId}"> ${item.text} </span>`,
+        tabHref,
+        tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption(item.text, _tooltipSide)),
+        useMenuBtn: true,
+      })} `;
+    }
+    return result;
+  };
+
+  /**
+   * Injects pre-built submenu item HTML into the submenu container and syncs
+   * the collapse state so labels are hidden when the menu is icon-only.
+   * @param {string} subMenuId
+   * @param {string} itemsHtml
+   */
+  static subMenuPopulate = (subMenuId, itemsHtml) => {
+    htmls(`.menu-btn-container-children-${subMenuId}`, itemsHtml);
+    const _menuMode = Modal.Data['modal-menu']?.options?.mode;
+    const _collapseIndicatorClass =
+      _menuMode === 'slide-menu-right' ? '.btn-icon-menu-mode-left' : '.btn-icon-menu-mode-right';
+    if (s(_collapseIndicatorClass) && !s(_collapseIndicatorClass).classList.contains('hide')) {
+      sa(`.menu-label-text-${subMenuId}`).forEach((el) => el.classList.add('hide'));
+    }
+  };
+
+  // Move modal title element into the bar's render container so it aligns with control buttons
+  /**
+   * Position a modal relative to an anchor element.
+   * @param {object} options - Positioning options
+   * @param {string} options.modalSelector - CSS selector for the modal element
+   * @param {string} options.anchorSelector - CSS selector for the anchor element
+   * @param {object} [options.offset={x: 0, y: 6}] - Offset from anchor
+   * @param {string} [options.align='right'] - Horizontal alignment ('left' or 'right')
+   * @param {boolean} [options.autoVertical=true] - Whether to automatically determine vertical position
+   * @param {boolean} [options.placeAbove] - Force position above/below anchor (overrides autoVertical)
+   */
+  static positionRelativeToAnchor({
+    modalSelector,
+    anchorSelector,
+    offset = { x: 0, y: 6 },
+    align = 'right',
+    autoVertical = true,
+    placeAbove,
+  }) {
+    try {
+      const modal = s(modalSelector);
+      const anchor = s(anchorSelector);
+
+      if (!modal || !anchor || !anchor.getBoundingClientRect) return;
+
+      // First, position the modal near its final position but off-screen
+      const arect = anchor.getBoundingClientRect();
+      const vh = windowGetH();
+      const vw = windowGetW();
+      const safeMargin = 6;
+
+      // Determine vertical position
+      let finalPlaceAbove = placeAbove;
+      if (autoVertical && placeAbove === undefined) {
+        const inBottomBar = anchor.closest && anchor.closest('.bottom-bar');
+        const inTopBar = anchor.closest && anchor.closest('.slide-menu-top-bar');
+
+        if (inBottomBar) finalPlaceAbove = true;
+        else if (inTopBar) finalPlaceAbove = false;
+        else finalPlaceAbove = arect.top > vh / 2; // heuristic fallback
+      }
+
+      // Set initial position (slightly offset from final position)
+      const initialOffset = finalPlaceAbove ? 20 : -20;
+      modal.style.position = 'fixed';
+      modal.style.opacity = '0';
+      modal.style.transition = 'opacity 150ms ease-out, transform 150ms ease-out';
+
+      // Position near the anchor but slightly offset
+      modal.style.top = `${finalPlaceAbove ? arect.top - 40 : arect.bottom + 20}px`;
+      modal.style.left = `${align === 'right' ? arect.right - 200 : arect.left}px`;
+      modal.style.transform = 'translateY(0)';
+
+      // Force reflow to ensure initial styles are applied
+      modal.offsetHeight;
+
+      // Now calculate final position
+      const mrect = modal.getBoundingClientRect();
+
+      // Calculate final top position
+      const top = finalPlaceAbove ? arect.top - mrect.height - offset.y : arect.bottom + offset.y;
+
+      // Calculate final left position based on alignment
+      let left;
+      if (align === 'right') {
+        left = arect.right - mrect.width - offset.x; // align right edges
+      } else {
+        left = arect.left + offset.x; // align left edges
+      }
+
+      // Ensure modal stays within viewport bounds
+      left = Math.max(safeMargin, Math.min(left, vw - mrect.width - safeMargin));
+      const finalTop = Math.max(safeMargin, Math.min(top, vh - mrect.height - safeMargin));
+
+      // Apply final position with smooth transition
+      requestAnimationFrame(() => {
+        modal.style.top = `${Math.round(finalTop)}px`;
+        modal.style.left = `${Math.round(left)}px`;
+        modal.style.opacity = '1';
+      });
+    } catch (e) {
+      console.error('Error positioning modal:', e);
+    }
+  }
+
+  /**
+   * Move the title element inside the bar button container for inline alignment.
+   * @param {string} idModal
+   */
+  static MoveTitleToBar(idModal) {
+    try {
+      const titleEl = s(`.title-modal-${idModal}`);
+      const container = s(`.btn-bar-modal-container-render-${idModal}`);
+      if (!titleEl || !container) return;
+      const titleNode = titleEl.cloneNode(true);
+      titleEl.remove();
+      container.classList.add('in');
+      container.classList.add('fll');
+      container.appendChild(titleNode);
+    } catch (e) {
+      // non-fatal: keep default placement if structure not present
+    }
+  }
+
+  /** Update the top-banner anchor href and bind the home-click handler. */
+  static setTopBannerLink() {
+    if (s(`.a-link-top-banner`)) {
+      s(`.a-link-top-banner`).setAttribute('href', `${location.origin}${getProxyPath()}`);
+      EventsUI.onClick(`.a-link-top-banner`, (e) => {
+        e.preventDefault();
+        s(`.action-btn-home`).click();
+      });
+    }
+  }
+
+  /** @type {number} */
+  static headerTitleHeight = 40;
+
+  /** Toggle the slide-menu open/close via the center action button. */
+  static actionBtnCenter() {
+    if (!s(`.btn-close-modal-menu`).classList.contains('hide')) {
+      return s(`.btn-close-modal-menu`).click();
+    }
+    if (!s(`.btn-menu-modal-menu`).classList.contains('hide')) {
+      return s(`.btn-menu-modal-menu`).click();
+    }
+  }
+
+  /** Hide the top-bar, bottom-bar and slide-menu (full-screen mode). */
+  static cleanUI() {
+    s(`.top-bar`).classList.add('hide');
+    s(`.bottom-bar`).classList.add('hide');
+    s(`.modal-menu`).classList.add('hide');
+  }
+
+  /** Restore the top-bar, bottom-bar and slide-menu after cleanUI. */
+  static restoreUI() {
+    s(`.top-bar`).classList.remove('hide');
+    s(`.bottom-bar`).classList.remove('hide');
+    s(`.modal-menu`).classList.remove('hide');
+  }
+
+  /**
+   * Re-applies canonical top/height layout for maximized slide-menu-backed view modals.
+   * This avoids iframe navigation leaving view containers offset at the top.
+   */
+  static syncViewLayout() {
+    const modalMenuOptions = this.Data['modal-menu']?.options || {};
+    const uiCollapsed = !!s(`.main-body-btn-ui-close`) && s(`.main-body-btn-ui-close`).classList.contains('hide');
+    const topOffset = uiCollapsed ? 0 : modalMenuOptions.heightTopBar ? modalMenuOptions.heightTopBar : 50;
+    const bottomOffset = uiCollapsed ? 0 : modalMenuOptions.heightBottomBar ? modalMenuOptions.heightBottomBar : 0;
+    const height = `${windowGetH() - topOffset - bottomOffset}px`;
+
+    Object.keys(this.Data).forEach((idModal) => {
+      const modalData = this.Data[idModal];
+      const modalEl = s(`.${idModal}`);
+      if (!modalData || !modalEl || !modalData.slideMenu) return;
+      if (s(`.btn-restore-${idModal}`) && s(`.btn-restore-${idModal}`).style.display === 'none') return;
+
+      modalEl.style.position = 'fixed';
+      modalEl.style.translate = '0px 0px';
+      modalEl.style.transform = '';
+      modalEl.style.top = `${topOffset}px`;
+      modalEl.style.height = height;
+    });
+
+    for (const id of coreUI) {
+      const key = `view-${id}`;
+      if (Responsive.hasChangedListener(key)) Responsive.triggerChanged(key);
+    }
+  }
+
+  /** Add missing `alt` attributes to all images for SEO/accessibility. */
+  static RenderSeoSanitizer = async () => {
+    sa('img').forEach((img) => {
+      if (!img.getAttribute('alt')) img.setAttribute('alt', 'image ' + Worker.title + ' ' + s4());
+    });
+  };
+}
+
+const renderMenuLabel = ({ img, src, text, icon }) => {
+  if (!img && !src) return html`<span class="inl menu-btn-icon">${icon}</span> ${text}`;
+  const imgSrc = src ? src : `${getProxyPath()}assets/ui-icons/${img}`;
+  return html`<img class="abs center img-btn-square-menu" src="${imgSrc}" />
+    <div class="abs center main-btn-menu-text">${text}</div>`;
+};
+
+const renderViewTitle = (
+  options = {
+    icon: '',
+    img: '',
+    text: '',
+    assetFolder: '',
+    'ui-icon': '',
+    imgClass: '',
+    textClass: '',
+    dim,
+    top,
+    topText: '',
+  },
+) => {
+  if (options.dim === undefined) options.dim = 30;
+  const { img, text, icon, dim, top } = options;
+  if (!img && !options['ui-icon']) return html`<span class="view-title-icon">${icon}</span> ${text}`;
+  const imgClass = options.imgClass || 'abs img-btn-square-view-title';
+  const textClass = options.textClass || 'in text-btn-square-view-title';
+  return html`<img
+      class="${imgClass}"
+      style="${renderCssAttr({
+        style: {
+          width: `${dim}px`,
+          height: `${dim}px`,
+          top: top !== undefined ? `${top}px !important` : undefined,
+        },
+      })}"
+      src="${options['ui-icon']
+        ? `${getProxyPath()}assets/${options.assetFolder ? options.assetFolder : 'ui-icons'}/${options['ui-icon']}`
+        : img}"
+    />
+    <div
+      class="${textClass}"
+      style="${renderCssAttr({
+        style: {
+          // 'padding-left': `${20 + dim}px`,
+          ...(options.topText !== undefined ? { top: options.topText + 'px !important' } : {}),
+        },
+      })}"
+    >
+      ${text}
+    </div>`;
+};
+
+const buildBadgeToolTipMenuOption = (id, sideKey = 'left') => {
+  const option = {
+    id: `tooltip-content-main-btn-${id}`,
+    text: `${Translate.instance(`${id}`)}`,
+    classList: 'tooltip-menu',
+    style: { top: `-40px` },
+  };
+  switch (sideKey) {
+    case 'left':
+      option.style.left = '60px';
+
+      break;
+
+    case 'right':
+      option.style.right = '60px';
+      break;
+
+    default:
+      break;
+  }
+  return option;
+};
+
+const isSubMenuOpen = (subMenuId) => {
+  return s(`.down-arrow-submenu-${subMenuId}`) && s(`.down-arrow-submenu-${subMenuId}`).style.rotate === '180deg';
+};
+
+const subMenuRender = async (subMenuId) => {
+  const _hBtn = 51;
+  const menuBtn = s(`.main-btn-${subMenuId}`);
+  const menuContainer = s(`.menu-btn-container-children-${subMenuId}`);
+  const arrow = s(`.down-arrow-submenu-${subMenuId}`);
+
+  if (!menuBtn || !menuContainer || !arrow) return;
+
+  const top = () => {
+    let value = menuBtn.offsetTop + Modal.Data['modal-menu'].options.heightTopBar;
+
+    const isHidden = s('.main-body-btn-ui-open').classList.contains('hide');
+    const isTopBottom = Modal.Data['modal-menu'].options.barMode === 'top-bottom-bar';
+
+    if (!isTopBottom && isHidden) value -= 51;
+    else if (!isHidden) value += 51;
+
+    menuContainer.style.top = `${value}px`;
+  };
+
+  Modal.subMenuBtnClass[subMenuId] = {
+    ...Modal.subMenuBtnClass[subMenuId],
+    btnSelector: `.btn-${subMenuId}`,
+    labelSelector: `.menu-label-text-${subMenuId}`,
+    top,
+  };
+
+  menuBtn.style.transition = '.3s';
+  arrow.style.transition = '.3s';
+
+  if (isSubMenuOpen(subMenuId)) {
+    // Close animation
+    menuContainer.style.overflow = 'hidden';
+    menuContainer.style.height = '0px';
+    arrow.style.rotate = '180deg';
+    setTimeout(() => {
+      menuBtn.style.marginBottom = '0px';
+      arrow.style.rotate = '0deg';
+    });
+  } else {
+    sa(`.menu-label-text-${subMenuId}`).forEach((el) => {
+      if (!el.classList.contains('hide')) el.classList.add('hide');
+    });
+    setTimeout(() => {
+      Modal.menuTextLabelAnimation('modal-menu', subMenuId);
+    });
+    // Open animation — match the current menu width (collapsed = 50px, extended = 320px)
+    const _menuMode = Modal.Data['modal-menu']?.options?.mode;
+    const _collapseIndicatorClass =
+      _menuMode === 'slide-menu-right' ? '.btn-icon-menu-mode-left' : '.btn-icon-menu-mode-right';
+    const _isMenuCollapsed = s(_collapseIndicatorClass) && !s(_collapseIndicatorClass).classList.contains('hide');
+    const _menuContainerWidth = _isMenuCollapsed ? 50 : 320;
+    setTimeout(top, 360);
+    menuContainer.style.width = `${_menuContainerWidth}px`;
+    menuContainer.style.overflow = null;
+    menuContainer.style.height = '0px';
+    menuContainer.style.height = `${_hBtn * 6}px`;
+    arrow.style.rotate = '0deg';
+    setTimeout(() => {
+      menuBtn.style.marginBottom = `${_hBtn * sa(`.menu-label-text-${subMenuId}`).length + 4}px`;
+      arrow.style.rotate = '180deg';
+    });
+  }
+
+  setTimeout(() => {
+    menuBtn.style.transition = null;
+  }, 500);
+};
+
+const subMenuHandler = (routes, route) => {
+  route = sanitizeRoute(route);
+  for (let _route of routes) {
+    _route = sanitizeRoute(_route);
+    if (_route !== route) {
+      if (isSubMenuOpen(_route)) subMenuRender(_route);
+    }
+  }
+  setTimeout(() => {
+    let cid = getQueryParams().cid;
+    if (cid && cid.includes(',')) {
+      cid = cid.split(',')[0];
+    }
+    if (s(`.main-sub-btn-active`)) s(`.main-sub-btn-active`).classList.remove('main-sub-btn-active');
+    if (cid && s(`.btn-${route}-${cid}`)) {
+      s(`.btn-${route}-${cid}`).classList.add('main-sub-btn-active');
+    }
+  });
+};
+
+export {
+  Modal,
+  renderMenuLabel,
+  renderViewTitle,
+  buildBadgeToolTipMenuOption,
+  subMenuRender,
+  isSubMenuOpen,
+  subMenuHandler,
+};

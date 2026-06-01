@@ -1,0 +1,39 @@
+[
+  {
+    "api": "atlas-sprite-sheet",
+    "model": {
+      "fileId": true
+    }
+  },
+  {
+    "api": "company",
+    "model": {
+      "logo": true
+    }
+  },
+  {
+    "api": "cyberia-instance",
+    "model": {
+      "thumbnail": true
+    }
+  },
+  {
+    "api": "cyberia-map",
+    "model": {
+      "thumbnail": true
+    }
+  },
+  {
+    "api": "document",
+    "model": {
+      "fileId": true,
+      "mdFileId": true
+    }
+  },
+  {
+    "api": "user",
+    "model": {
+      "profileImageId": true
+    }
+  }
+]

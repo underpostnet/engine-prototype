@@ -1,0 +1,123 @@
+name: CI | Publish npm repository package
+on:
+  push:
+    branches: ['master']
+  pull_request:
+    branches: ['master']
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 'Changelog message for the build'
+        required: false
+        default: ''
+      deploy_conf_id:
+        description: 'Engine conf ID to dispatch after build'
+        required: false
+        default: ''
+      deploy_type:
+        description: 'Deployment type for the engine conf CD (sync-and-deploy or init)'
+        required: false
+        default: ''
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+jobs:
+  pwa-microservices-template:
+    if: |
+      github.repository == 'underpostnet/engine'
+      && (
+        startsWith(github.event.head_commit.message, 'ci(package-pwa-microservices-template')
+        || github.event_name == 'workflow_dispatch'
+      )
+    name: Update npm repo package Jobs
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/rockylinux/rockylinux:9
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install required packages
+        run: |
+          dnf install -y sudo tar gzip bzip2 git
+          dnf install -y curl --allowerasing
+
+      - name: Install Node.js
+        run: |
+          curl -fsSL https://rpm.nodesource.com/setup_24.x | bash -
+          dnf install nodejs -y
+
+      - name: Capture commit message
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            LAST_COMMIT_MESSAGE="${{ github.event.inputs.message }}"
+            if [ -z "$LAST_COMMIT_MESSAGE" ]; then
+              LAST_COMMIT_MESSAGE="Update repository"
+            fi
+          else
+            FULL_MSG="${{ github.event.head_commit.message }}"
+            REST="$(echo "$FULL_MSG" | tail -n +2 | awk 'NR==1{first=$0; has_first=1; next} NR==2{print first " " $0; has_first=0; next} {print} END{if(has_first) print first}')"
+            LAST_COMMIT_MESSAGE="${REST:-$FULL_MSG}"
+          fi
+          echo "LAST_COMMIT_MESSAGE<<EOF" >> $GITHUB_ENV
+          echo "$LAST_COMMIT_MESSAGE" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "[INFO] Extracted payload: $LAST_COMMIT_MESSAGE"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Set git global credentials
+        run: |
+          git config --global --add safe.directory '*'
+          git config --global credential.helper ""
+          git config --global user.name 'underpostnet'
+          git config --global user.email 'fcoverdugoa@underpost.net'
+
+      - name: Clone github package repository
+        env:
+          GITHUB_TOKEN: ${{ secrets.GIT_AUTH_TOKEN }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
+        run: |
+          cd .. && node engine/bin clone underpostnet/pwa-microservices-template
+          cd engine
+          npm run update:template
+          cd ../pwa-microservices-template
+          git remote set-url origin git@github.com:underpostnet/pwa-microservices-template.git
+          git add .
+          git config user.name 'underpostnet'
+          git config user.email 'fcoverdugoa@underpost.net'
+          if git diff --cached --quiet; then
+            echo "[INFO] No template changes to publish; skipping commit and push."
+          else
+            node ../engine/bin cmt . ci package-pwa-microservices-template-ghpkg "$LAST_COMMIT_MESSAGE"
+            node ../engine/bin push . underpostnet/pwa-microservices-template
+          fi
+
+      - name: Dispatch all engine CIs
+        run: |
+          DEPLOY_CONF_ID="${{ github.event.inputs.deploy_conf_id }}"
+          DEPLOY_TYPE="${{ github.event.inputs.deploy_type }}"
+          for ENGINE in engine-core engine-prototype engine-cyberia engine-lampp engine-test; do
+            SYNC="false"
+            DT=""
+            if [ "$ENGINE" = "$DEPLOY_CONF_ID" ]; then
+              SYNC="true"
+              DT="$DEPLOY_TYPE"
+            fi
+            echo "[INFO] Dispatching ${ENGINE}.ci.yml (sync=$SYNC, deploy_type=$DT)"
+            INPUTS="{\"sync\":\"${SYNC}\""
+            if [ -n "$DT" ]; then
+              INPUTS="${INPUTS},\"deploy_type\":\"${DT}\""
+            fi
+            INPUTS="${INPUTS}}"
+            curl -s -X POST \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: token ${{ secrets.GIT_AUTH_TOKEN }}" \
+              "https://api.github.com/repos/underpostnet/engine/actions/workflows/${ENGINE}.ci.yml/dispatches" \
+              -d "{\"ref\":\"master\",\"inputs\":${INPUTS}}"
+          done

@@ -1,0 +1,210 @@
+{
+  "rpi4mbarm64-iso-ram": {
+    "type": "iso-ram",
+    "osIdLike": "debian ubuntu",
+    "architecture": "arm64",
+    "isoUrl": "https://cdimage.ubuntu.com/releases/24.04/release/ubuntu-24.04.3-live-server-arm64.iso",
+    "tftpPrefix": "rpi4mb",
+    "bootstrapHttpServerPort": 8888,
+    "menuentryStr": "UNDERPOST.NET UEFI/GRUB/MAAS RPi4 ISO-RAM Ubuntu 24.04 ephemeral commissioning (ARM64)",
+    "networkInterfaceName": "enabcm6e4ei0",
+    "chronyc": {
+      "timezone": "America/Santiago",
+      "chronyConfPath": "/etc/chrony/chrony.conf"
+    },
+    "firmwares": [
+      {
+        "url": "https://github.com/pftf/RPi4/releases/download/v1.41/RPi4_UEFI_Firmware_v1.41.zip",
+        "gateway": "192.168.1.1",
+        "subnet": "255.255.255.0"
+      }
+    ],
+    "maas": {
+      "commissioning": {
+        "architecture": "arm64/hwe-24.04-edge",
+        "name": "ubuntu/noble"
+      }
+    },
+    "keyboard": {
+      "layout": "es"
+    }
+  },
+  "rpi4mbarm64-chroot": {
+    "type": "chroot-debootstrap",
+    "osIdLike": "debian ubuntu",
+    "architecture": "arm64",
+    "tftpPrefix": "rpi4mb",
+    "bootstrapHttpServerPort": 8888,
+    "menuentryStr": "UNDERPOST.NET UEFI/GRUB/MAAS RPi4 CHROOT Ubuntu 24.04 ephemeral commissioning (ARM64)",
+    "networkInterfaceName": "enabcm6e4ei0",
+    "firmwares": [
+      {
+        "url": "https://github.com/pftf/RPi4/releases/download/v1.41/RPi4_UEFI_Firmware_v1.41.zip",
+        "gateway": "192.168.1.1",
+        "subnet": "255.255.255.0"
+      }
+    ],
+    "chronyc": {
+      "timezone": "America/Santiago",
+      "chronyConfPath": "/etc/chrony/chrony.conf"
+    },
+    "debootstrap": {
+      "image": {
+        "architecture": "arm64",
+        "name": "noble"
+      }
+    },
+    "maas": {
+      "commissioning": {
+        "architecture": "arm64/ga-24.04",
+        "name": "ubuntu/noble"
+      }
+    },
+    "keyboard": {
+      "layout": "es"
+    }
+  },
+  "rpi4mbarm64-iso-nfs": {
+    "type": "iso-nfs",
+    "osIdLike": "debian ubuntu",
+    "architecture": "arm64",
+    "isoUrl": "https://cdimage.ubuntu.com/releases/24.04/release/ubuntu-24.04.3-live-server-arm64.iso",
+    "tftpPrefix": "rpi4mb",
+    "bootstrapHttpServerPort": 8888,
+    "menuentryStr": "UNDERPOST.NET UEFI/GRUB/MAAS RPi4 ISO-NFS Ubuntu 24.04 ephemeral commissioning (ARM64)",
+    "networkInterfaceName": "enabcm6e4ei0",
+    "chronyc": {
+      "timezone": "America/Santiago",
+      "chronyConfPath": "/etc/chrony/chrony.conf"
+    },
+    "firmwares": [
+      {
+        "url": "https://github.com/pftf/RPi4/releases/download/v1.41/RPi4_UEFI_Firmware_v1.41.zip",
+        "gateway": "192.168.1.1",
+        "subnet": "255.255.255.0"
+      }
+    ],
+    "maas": {
+      "commissioning": {
+        "architecture": "arm64/hwe-24.04-edge",
+        "name": "ubuntu/noble"
+      }
+    },
+    "keyboard": {
+      "layout": "es"
+    }
+  },
+  "rpi4mbarm64-chroot-rocky9": {
+    "type": "chroot-container",
+    "osIdLike": "rhel centos fedora",
+    "architecture": "arm64",
+    "tftpPrefix": "rpi4mb",
+    "bootstrapHttpServerPort": 8888,
+    "menuentryStr": "UNDERPOST.NET Container CHROOT Rocky Linux 9 ephemeral commissioning (ARM64)",
+    "networkInterfaceName": "eth0",
+    "firmwares": [
+      {
+        "url": "https://github.com/pftf/RPi4/releases/download/v1.41/RPi4_UEFI_Firmware_v1.41.zip",
+        "gateway": "192.168.1.1",
+        "subnet": "255.255.255.0"
+      }
+    ],
+    "chronyc": {
+      "timezone": "America/Santiago",
+      "chronyConfPath": "/etc/chrony/chrony.conf"
+    },
+    "container": {
+      "image": "quay.io/rockylinux/rockylinux:9",
+      "architecture": "arm64",
+      "packages": ["kernel", "chrony", "kbd", "glibc-langpack-en", "glibc-langpack-es", "tzdata"]
+    },
+    "keyboard": {
+      "layout": "es"
+    }
+  },
+  "hp-envy-iso-nfs": {
+    "type": "iso-nfs",
+    "osIdLike": "debian ubuntu",
+    "architecture": "amd64",
+    "isoUrl": "https://releases.ubuntu.com/releases/24.04/ubuntu-24.04.3-live-server-amd64.iso",
+    "tftpPrefix": "envy",
+    "bootstrapHttpServerPort": 8888,
+    "menuentryStr": "UNDERPOST.NET UEFI/ISO-IPXE/MAAS hp-envy ISO-NFS Ubuntu 24.04 ephemeral commissioning (AMD64)",
+    "networkInterfaceName": "eth0",
+    "chronyc": {
+      "timezone": "America/Santiago",
+      "chronyConfPath": "/etc/chrony/chrony.conf"
+    },
+    "firmwares": [],
+    "maas": {
+      "commissioning": {
+        "architecture": "amd64/hwe-24.04-edge",
+        "name": "ubuntu/noble"
+      }
+    },
+    "keyboard": {
+      "layout": "es"
+    }
+  },
+  "hp-envy-iso-ram": {
+    "type": "iso-ram",
+    "osIdLike": "debian ubuntu",
+    "architecture": "amd64",
+    "isoUrl": "https://releases.ubuntu.com/releases/24.04/ubuntu-24.04.3-live-server-amd64.iso",
+    "tftpPrefix": "envy",
+    "bootstrapHttpServerPort": 8888,
+    "menuentryStr": "UNDERPOST.NET UEFI/ISO-IPXE/MAAS hp-envy ISO-RAM Ubuntu 24.04 ephemeral commissioning (AMD64)",
+    "networkInterfaceName": "eth0",
+    "chronyc": {
+      "timezone": "America/Santiago",
+      "chronyConfPath": "/etc/chrony/chrony.conf"
+    },
+    "firmwares": [],
+    "maas": {
+      "commissioning": {
+        "architecture": "amd64/hwe-24.04-edge",
+        "name": "ubuntu/noble"
+      }
+    },
+    "keyboard": {
+      "layout": "es"
+    }
+  },
+  "hp-envy-iso-ram-rocky9": {
+    "type": "iso-ram",
+    "osIdLike": "rhel centos fedora",
+    "architecture": "amd64",
+    "isoUrl": "https://download.rockylinux.org/pub/rocky/9/isos/x86_64/Rocky-9-latest-x86_64-boot.iso",
+    "tftpPrefix": "envy-rocky9",
+    "bootstrapHttpServerPort": 8888,
+    "menuentryStr": "UNDERPOST.NET UEFI/ISO-IPXE/KICKSTART-ANACONDA hp-envy ISO-RAM Rocky Linux 9 ephemeral commissioning (AMD64)",
+    "networkInterfaceName": "eth0",
+    "chronyc": {
+      "timezone": "America/Santiago",
+      "chronyConfPath": "/etc/chrony/chrony.conf"
+    },
+    "firmwares": [],
+    "container": {
+      "image": "quay.io/rockylinux/rockylinux:9",
+      "architecture": "amd64",
+      "packages": [
+        "kernel",
+        "kernel-core",
+        "kernel-modules",
+        "linux-firmware",
+        "dracut",
+        "dracut-network",
+        "dracut-config-generic",
+        "dracut-live",
+        "nfs-utils",
+        "tar",
+        "iproute",
+        "openssh-server",
+        "openssh-clients"
+      ]
+    },
+    "keyboard": {
+      "layout": "es"
+    }
+  }
+}

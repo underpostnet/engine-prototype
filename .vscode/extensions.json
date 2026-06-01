@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    "anseki.vscode-color",
+    "bashmish.es6-string-css",
+    "eamodio.gitlens",
+    "esbenp.prettier-vscode",
+    "shakram02.bash-beautify",
+    "tobermory.es6-string-html"
+  ]
+}
