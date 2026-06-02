@@ -511,6 +511,30 @@ const DefaultConf = /**/ {
         { path: '/test', title: 'Test', client: 'Test', head: [], body: [] },
       ],
     },
+    Cecinasmarcelina: {
+      head: ['Seo', 'Pwa', 'Css', 'CecinasmarcelinaScripts', 'Production'],
+      body: ['CacheControl', 'CecinasmarcelinaSplashScreen', '404', '500'],
+      mailer: { userVerifyEmail: 'DefaultVerifyEmail', userRecoverEmail: 'DefaultRecoverEmail' },
+      views: [
+        {
+          path: '/offline',
+          title: 'No Network Connection',
+          client: 'NoNetworkConnection',
+          head: [],
+          body: [],
+          offlineDefault: true,
+        },
+        {
+          path: '/maintenance',
+          title: 'Server Maintenance',
+          client: 'Maintenance',
+          head: [],
+          body: [],
+          maintenanceDefault: true,
+        },
+        { path: '/test', title: 'Test', client: 'Test', head: [], body: [] },
+      ],
+    },
   },
   server: {
     'healthcare.nexodev.org': {
