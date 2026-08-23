@@ -70,6 +70,7 @@ const DefaultConf = /**/ {
           'PanelForm',
           'EventBus',
           'ClientEvents',
+          'Repository',
         ],
         chart: ['connectedScatterplotChart'],
         healthcare: [
@@ -231,6 +232,7 @@ const DefaultConf = /**/ {
           'Alert',
           'EventBus',
           'ClientEvents',
+          'Repository',
         ],
         bymyelectrics: [
           'AppShellBymyelectrics',
@@ -378,6 +380,7 @@ const DefaultConf = /**/ {
           'AppStore',
           'EventBus',
           'ClientEvents',
+          'Repository',
         ],
         cecinasmarcelina: [
           'AppShellCecinasmarcelina',
