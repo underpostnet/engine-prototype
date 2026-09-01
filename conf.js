@@ -144,6 +144,7 @@ const DefaultConf = /**/ {
           import_name_build: '/dist/marked/marked.esm.js',
         },
         { folder: './node_modules/@fullcalendar', public_folder: '/dist/@fullcalendar' },
+        { folder: './node_modules/fullcalendar', public_folder: '/dist/fullcalendar' },
         { folder: './node_modules/rrule/dist/es5', public_folder: '/dist/rrule' },
         {
           folder: './node_modules/dexie/dist',
