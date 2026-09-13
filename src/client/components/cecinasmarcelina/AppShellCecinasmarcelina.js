@@ -30,8 +30,6 @@ class AppShellCecinasmarcelina {
     const RouterInstance = RouterCecinasmarcelina.instance();
 
     const { barConfig } = await Themes[Css.currentTheme]();
-
-    const badgeNotificationMenuStyle = { top: '-33px', left: '24px' };
     const barMode = undefined; // 'top-bottom-bar';
     await Modal.instance({
       id: 'modal-menu',
@@ -184,8 +182,7 @@ class AppShellCecinasmarcelina {
             ${await Badge.instance({
               id: 'main-btn-chat',
               type: 'circle-red',
-              style: badgeNotificationMenuStyle,
-              classList: 'hide',
+              classList: 'hide badge-notification-menu',
             })}`,
             attrs: `data-id="chat"`,
             tabHref: `${getProxyPath()}chat`,
