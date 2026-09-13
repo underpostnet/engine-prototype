@@ -1,8 +1,8 @@
 import { generateRandomPasswordSelection, strToDateUTC } from '../../client/components/core/CommonJs.js';
 import { DataBaseProviderService } from '../../db/DataBaseProvider.js';
 import { MailerProvider } from '../../mailer/MailerProvider.js';
-import { loggerFactory } from '../../server/logger.js';
-import { resolveHostKeyContext } from '../../server/conf.js';
+import { loggerFactory } from '../../server/ops/logger.js';
+import { resolveHostKeyContext } from '../../server/runtime/conf.js';
 import { UserService } from '../user/user.service.js';
 import { HealthcareAppointmentDto } from './healthcare-appointment.model.js';
 
@@ -11,14 +11,13 @@ const logger = loggerFactory(import.meta);
 class HealthcareAppointmentService {
   static post = async (req, res, options) => {
     /** @type {import('./healthcare-appointment.model.js').HealthcareAppointmentModel} */
-    const HealthcareAppointment =
-      DataBaseProviderService.getModel("HealthcareAppointment", options);
+    const HealthcareAppointment = DataBaseProviderService.getModel('HealthcareAppointment', options);
 
     /** @type {import('../user/user.model.js').UserModel} */
-    const User = DataBaseProviderService.getModel("User", options);
+    const User = DataBaseProviderService.getModel('User', options);
 
     /** @type {import('../event-scheduler/event-scheduler.model.js').EventSchedulerModel} */
-    const EventScheduler = DataBaseProviderService.getModel("EventScheduler", options);
+    const EventScheduler = DataBaseProviderService.getModel('EventScheduler', options);
 
     const event = await EventScheduler.findById(req.body.eventSchedulerId);
     if (!event) throw new Error(`Could not find event scheduler`);
@@ -55,11 +54,14 @@ class HealthcareAppointmentService {
       const translate = {
         H1: { es: 'Cita agendada', en: 'Appointment scheduled' },
         P1: {
-          es: `Te hemos agendado una cita en la fecha: ${result._doc.date.toISOString().split('T')[0]} y ${result._doc.date.toISOString().slice(0, -8).split('T')[1]
-            } Hrs indicadas. La nutricionista se pondrá en contacto contigo para confirmar la cita.`,
-          en: `We have scheduled an appointment on the specified date ${result._doc.date.toISOString().split('T')[0]
-            } and ${result._doc.date.toISOString().slice(0, -8).split('T')[1]
-            } Hrs. time. The nutritionist will contact you to confirm the appointment.`,
+          es: `Te hemos agendado una cita en la fecha: ${result._doc.date.toISOString().split('T')[0]} y ${
+            result._doc.date.toISOString().slice(0, -8).split('T')[1]
+          } Hrs indicadas. La nutricionista se pondrá en contacto contigo para confirmar la cita.`,
+          en: `We have scheduled an appointment on the specified date ${
+            result._doc.date.toISOString().split('T')[0]
+          } and ${
+            result._doc.date.toISOString().slice(0, -8).split('T')[1]
+          } Hrs. time. The nutritionist will contact you to confirm the appointment.`,
         },
       };
       const sendResult = await MailerProvider.send({
@@ -88,8 +90,7 @@ class HealthcareAppointmentService {
   };
   static get = async (req, res, options) => {
     /** @type {import('./healthcare-appointment.model.js').HealthcareAppointmentModel} */
-    const HealthcareAppointment =
-      DataBaseProviderService.getModel("HealthcareAppointment", options);
+    const HealthcareAppointment = DataBaseProviderService.getModel('HealthcareAppointment', options);
 
     // Handle request for a single appointment by ID
     if (req.params.id) {
@@ -121,14 +122,12 @@ class HealthcareAppointmentService {
   };
   static put = async (req, res, options) => {
     /** @type {import('./healthcare-appointment.model.js').HealthcareAppointmentModel} */
-    const HealthcareAppointment =
-      DataBaseProviderService.getModel("HealthcareAppointment", options);
+    const HealthcareAppointment = DataBaseProviderService.getModel('HealthcareAppointment', options);
     return await HealthcareAppointment.findByIdAndUpdate(req.params.id, req.body);
   };
   static delete = async (req, res, options) => {
     /** @type {import('./healthcare-appointment.model.js').HealthcareAppointmentModel} */
-    const HealthcareAppointment =
-      DataBaseProviderService.getModel("HealthcareAppointment", options);
+    const HealthcareAppointment = DataBaseProviderService.getModel('HealthcareAppointment', options);
     return await HealthcareAppointment.findByIdAndDelete(req.params.id);
   };
 }

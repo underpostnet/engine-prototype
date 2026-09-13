@@ -1,4 +1,4 @@
-import { loggerFactory } from '../../server/logger.js';
+import { loggerFactory } from '../../server/ops/logger.js';
 import { HealthcareAppointmentService } from './healthcare-appointment.service.js';
 
 const logger = loggerFactory(import.meta);

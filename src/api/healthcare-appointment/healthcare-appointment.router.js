@@ -1,5 +1,6 @@
-import { moderatorGuard } from '../../server/auth.js';
-import { loggerFactory } from '../../server/logger.js';
+import { loggerFactory } from '../../server/ops/logger.js';
+import { moderatorGuard } from '../../server/security/auth.js';
+
 import { HealthcareAppointmentController } from './healthcare-appointment.controller.js';
 import express from 'express';
 
