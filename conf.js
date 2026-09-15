@@ -489,6 +489,7 @@ const DefaultConf = /**/ {
           maintenanceDefault: true,
         },
         { path: '/test', title: 'Test', client: 'Test', head: [], body: [] },
+        { path: '/404', title: '404 Not Found', client: 'NotFound', head: [], body: [] },
       ],
     },
     Bymyelectrics: {
@@ -513,6 +514,7 @@ const DefaultConf = /**/ {
           maintenanceDefault: true,
         },
         { path: '/test', title: 'Test', client: 'Test', head: [], body: [] },
+        { path: '/404', title: '404 Not Found', client: 'NotFound', head: [], body: [] },
       ],
     },
     Cecinasmarcelina: {
@@ -537,6 +539,7 @@ const DefaultConf = /**/ {
           maintenanceDefault: true,
         },
         { path: '/test', title: 'Test', client: 'Test', head: [], body: [] },
+        { path: '/404', title: '404 Not Found', client: 'NotFound', head: [], body: [] },
       ],
     },
   },
