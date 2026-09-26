@@ -28,6 +28,7 @@ class RouterCecinasmarcelina {
       '/docs': { title: 'docs', render: () => s(`.main-btn-docs`).click() },
       '/chat': { title: 'docs', render: () => s(`.main-btn-chat`).click() },
       '/blog': { title: 'docs', render: () => s(`.main-btn-blog`).click() },
+      '/entry': { title: 'entry', render: () => s(`.main-btn-blog`).click() },
       '/recover': { title: 'recover', render: () => s(`.main-btn-recover`).click() },
       '/u': { title: 'public-profile', render: () => s(`.main-btn-public-profile`).click() },
       '/404': { title: '404 Not Found', render: () => s(`.main-btn-404`).click() },

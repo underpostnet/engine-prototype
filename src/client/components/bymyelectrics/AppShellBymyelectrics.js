@@ -383,6 +383,8 @@ class AppShellBymyelectrics {
         html: async () =>
           await Docs.instance({
             idModal: 'modal-docs',
+            // This client publishes no documentation tree, so it offers no guide.
+            disabled: ['guide'],
           }),
         handleType: 'bar',
         observer: true,
