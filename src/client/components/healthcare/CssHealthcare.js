@@ -123,7 +123,7 @@ class CssHealthcareDark {
           button {
             border: 2px solid #501455;
           }
-          .main-body-top {
+          .shell-scrim {
             background: rgb(12 12 12 / 50%) !important;
           }
           .home-body-btn {
@@ -180,7 +180,7 @@ class CssHealthcareLight {
           button {
             border: 2px solid #fff0cc;
           }
-          .main-body-top {
+          .shell-scrim {
             background: rgb(255 253 234 / 50%) !important;
           }
           .home-body-btn {

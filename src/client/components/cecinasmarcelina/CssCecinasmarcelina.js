@@ -55,7 +55,7 @@ class CssCecinasmarcelinaDark {
           button {
             border: 2px solid #3d1111;
           }
-          .main-body-top {
+          .shell-scrim {
             background: rgb(26 10 10 / 50%) !important;
           }
         </style>
@@ -104,7 +104,7 @@ class CssCecinasmarcelinaLight {
           button {
             border: 2px solid #f5ddd0;
           }
-          .main-body-top {
+          .shell-scrim {
             background: rgb(253 245 240 / 50%) !important;
           }
         </style>

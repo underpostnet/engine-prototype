@@ -1,20 +1,19 @@
 import { Account } from '../core/Account.js';
 import { BtnIcon } from '../core/BtnIcon.js';
-import { commonModeratorGuard, getId, newInstance, range } from '../core/CommonJs.js';
+import { commonModeratorGuard, newInstance, range } from '../core/CommonJs.js';
 import { Css, ThemeEvents, Themes, darkTheme } from '../core/Css.js';
 import { EventsUI } from '../core/EventsUI.js';
 import { LogIn } from '../core/LogIn.js';
 import { LogOut } from '../core/LogOut.js';
-import { buildBadgeToolTipMenuOption, Modal, renderMenuLabel, renderViewTitle } from '../core/Modal.js';
+import { Modal, renderViewTitle } from '../core/Modal.js';
+import { ShellLayout } from '../core/ShellLayout.js';
+import { ShellNavigation } from '../core/ShellNavigation.js';
 import { SignUp } from '../core/SignUp.js';
 import { Translate } from '../core/Translate.js';
-import { append, htmls, prepend, s } from '../core/VanillaJs.js';
+import { htmls, prepend, s } from '../core/VanillaJs.js';
 import { AppStoreHealthcare } from './AppStoreHealthcare.js';
-import Sortable from 'sortablejs';
 import { RouterHealthcare, BannerAppTemplate } from './RouterHealthcare.js';
 import { SettingsHealthcare } from './SettingsHealthcare.js';
-import { loggerFactory } from '../core/Logger.js';
-import { Badge } from '../core/Badge.js';
 import { Recover } from '../core/Recover.js';
 import { MenuHomeHealthcare, NutritionalTips } from './CommonHealthcare.js';
 import { CalendarCore } from '../core/CalendarCore.js';
@@ -24,187 +23,229 @@ import { HealthcareAppointmentManagement } from '../../services/healthcare-appoi
 import { RecordMoodHealthcare } from './RecordMoodHealthcare.js';
 import { getProxyPath, getQueryParams } from '../core/Router.js';
 
-const logger = loggerFactory(import.meta);
+const homeIcon = (routeId) => html`<img class="slide-menu-icon" src="${getProxyPath()}${MenuHomeHealthcare[routeId].icon}" />`;
+
+const homeIconText = (routeId) => html`<span class="inl menu-label-text-slide-menu-icon">${Translate.instance(routeId)}</span>`;
 
 class AppShellHealthcare {
-  static Data = {};
   static async instance() {
-    const id = getId(AppShellHealthcare.Data, 'menu-');
-    AppShellHealthcare.Data[id] = {};
     const RouterInstance = RouterHealthcare.instance();
+    const user = () => AppStoreHealthcare.Data.user.main.model.user;
+
+    const appoimentFormRender = async (eventData) => {
+      const { barConfig } = await Themes[Css.currentTheme]();
+      const idModal = `modal-healthcare-appointment${eventData ? `-${new Date(eventData.start).getTime()}` : ''}`;
+      await Modal.instance({
+        id: idModal,
+        route: 'healthcare-appointment',
+        barConfig,
+        title: renderViewTitle({
+          icon: html` <i class="fas fa-medkit"></i>`,
+          text: `${eventData ? `${eventData.event.title} ` : ''}${Translate.instance('healthcare-appointment')}`,
+        }),
+        html: async () =>
+          await AppointmentFormHealthCare.instance({ idModal: 'modal-healthcare-appointment' }, eventData),
+        handleType: 'bar',
+        maximize: true,
+        mode: 'view',
+        slideMenu: 'modal-menu',
+        RouterInstance,
+      });
+      if (!eventData) return { status: 'error' };
+      const cleanEvent = () => {
+        AppointmentFormHealthCare.offSubmitted(idModal);
+        delete Modal.Data[idModal].onCloseListener[idModal];
+      };
+      return await new Promise((resolve) => {
+        AppointmentFormHealthCare.onSubmitted(
+          async ({ status, data, message }) => {
+            cleanEvent();
+            await Modal.removeModal(idModal);
+            return resolve({ status });
+          },
+          { key: idModal },
+        );
+        Modal.Data[idModal].onCloseListener[idModal] = () => {
+          cleanEvent();
+          return resolve({ status: 'error' });
+        };
+      });
+    };
+
+    const navigation = {
+      RouterInstance,
+      entries: [
+        {
+          id: 'settings',
+          icon: html`<i class="fas fa-sliders-h"></i>`,
+          view: () => ({ html: async () => await SettingsHealthcare.instance({ idModal: 'modal-settings' }) }),
+        },
+        { id: 'home', route: '', icon: html`<i class="fas fa-home"></i>`, active: true },
+        {
+          id: 'log-in',
+          icon: html`<i class="fas fa-sign-in-alt"></i>`,
+          view: () => ({ html: async () => await LogIn.instance() }),
+        },
+        {
+          id: 'sign-up',
+          icon: html`<i class="fas fa-user-plus"></i>`,
+          view: () => ({
+            html: async () =>
+              await SignUp.instance({
+                idModal: 'modal-sign-up',
+                bottomRender: async () => html` <div class="in section-mp"></div>`,
+              }),
+          }),
+        },
+        {
+          id: 'log-out',
+          icon: html`<i class="fas fa-sign-out-alt"></i>`,
+          session: true,
+          view: () => ({ html: async () => await LogOut.instance() }),
+        },
+        {
+          id: 'account',
+          icon: html`<i class="fas fa-user-circle"></i>`,
+          session: true,
+          view: () => ({
+            html: async () => await Account.instance({ idModal: 'modal-account', user: user(), disabled: [] }),
+          }),
+        },
+        {
+          id: 'recover',
+          icon: html`<i class="fa-solid fa-arrow-rotate-left"></i>`,
+          hidden: true,
+          view: () => ({ html: async () => await Recover.instance({ idModal: 'modal-recover', user: user() }) }),
+        },
+        {
+          id: 'nutrition-tips',
+          icon: homeIcon('nutrition-tips'),
+          text: homeIconText('nutrition-tips'),
+          hidden: true,
+          view: () => ({
+            html: async () => {
+              let render = '';
+
+              for (const indexTip of range(0, NutritionalTips.length - 1)) {
+                render += html`<div class="in nutrition-tips-panel-container">
+                  <div class="in b0-panel-sub-container">
+                    <div class="fl">
+                      <div class="in fll" style="width: 30%;">
+                        <div class="in nutrition-tips-panel-cell">
+                          <div class="abs center">
+                            <img
+                              class="in nutrition-tips-panel-icon"
+                              src="${getProxyPath()}${NutritionalTips[indexTip].icon}"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                      <div class="in fll" style="width: 70%;">
+                        <div class="in nutrition-tips-panel-cell">
+                          <br />${Translate.instance(`nutrition-tips-${indexTip}`)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>`;
+              }
+              return html`${render}`;
+            },
+          }),
+        },
+        {
+          id: 'record-mood',
+          icon: homeIcon('record-mood'),
+          text: homeIconText('record-mood'),
+          hidden: true,
+          view: async () => ({
+            observer: true,
+            html: await RecordMoodHealthcare.instance({ idModal: 'modal-record-mood' }),
+          }),
+        },
+        {
+          id: 'calendar',
+          icon: html`<i class="fas fa-calendar-alt"></i>`,
+          text: Translate.instance('healthcare-appointment'),
+          view: async () => {
+            const idModal = 'modal-calendar';
+            const route = 'calendar';
+            const { data: hiddenDates } = await HealthcareAppointmentService.get({ id: 'appointment-dates' });
+            return {
+              observer: true,
+              html: async () => {
+                setTimeout(() => {
+                  Modal.Data['modal-calendar'].onCloseListener['TopRefreshEvent'] = () => {
+                    LogIn.offLogin('model-appointment-calendar');
+                    LogOut.offLogout('model-appointment-calendar');
+                  };
+                  const authSwitch = () => {
+                    if (!s(`.btn-calendar-panel-${idModal}-add`)) return;
+                    if (commonModeratorGuard(AppStoreHealthcare.Data.user.main.model.user.role))
+                      s(`.btn-calendar-panel-${idModal}-add`).classList.remove('hide');
+                    else {
+                      s(`.btn-calendar-panel-${idModal}-add`).classList.add('hide');
+                    }
+                  };
+                  LogIn.onLogin(authSwitch, { key: 'model-appointment-calendar' });
+                  LogOut.onLogout(authSwitch, { key: 'model-appointment-calendar' });
+                  setTimeout(() => {
+                    ShellLayout.hideChrome();
+
+                    setTimeout(() => {
+                      s(`.btn-calendar-panel-modal-calendar-custom0`).click();
+                    }, 500);
+                    setTimeout(() => {
+                      s(`.btn-calendar-panel-modal-calendar-custom0`).click();
+                    }, 1500);
+                  });
+                });
+                return await CalendarCore.instance({
+                  idModal,
+                  appStore: AppStoreHealthcare,
+                  route,
+                  hiddenDates,
+                  parentIdModal: 'modal-calendar',
+                  role: {
+                    add: () => commonModeratorGuard(AppStoreHealthcare.Data.user.main.model.user.role),
+                  },
+                  eventClick: async function (dateData, args) {
+                    const { status } = await appoimentFormRender(dateData);
+                    if (status === 'success') {
+                      CalendarCore.Data[idModal].hiddenDates.push(dateData.start);
+                      args.el.remove();
+                    }
+                  },
+                });
+              },
+            };
+          },
+        },
+        {
+          id: 'healthcare-appointment',
+          icon: html`<i class="fas fa-medkit"></i>`,
+          hidden: true,
+          action: () => s(`.main-btn-calendar`).click(),
+        },
+        {
+          id: 'healthcare-appointment-management',
+          icon: html`<i class="fa-solid fa-rectangle-list"></i>`,
+          hidden: true,
+          view: () => ({
+            html: async () => await HealthcareAppointmentManagement.instance({ appStore: AppStoreHealthcare }),
+          }),
+        },
+      ],
+    };
 
     const { barConfig } = await Themes[Css.currentTheme]();
 
     const vitaintegralMod = location.host.match('vitaintegral') || getQueryParams().vitaintegral;
     await Modal.instance({
       id: 'modal-menu',
-      html: html`
-        <div class="fl menu-btn-container">
-          ${await BtnIcon.instance({
-            class: 'in wfa main-btn-menu main-btn-settings',
-            useMenuBtn: true,
-            label: renderMenuLabel({
-              icon: html`<i class="fas fa-sliders-h"></i>`,
-              text: html`<span class="menu-label-text">${Translate.instance('settings')}</span>`,
-            }),
-            attrs: `data-id="settings"`,
-            tabHref: `${getProxyPath()}settings`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption('settings')),
-          })}
-          ${await BtnIcon.instance({
-            class: 'in wfa main-btn-menu main-btn-home main-btn-menu-active',
-            useMenuBtn: true,
-            label: renderMenuLabel({
-              icon: html`<i class="fas fa-home"></i>`,
-              text: html`<span class="menu-label-text">${Translate.instance('home')}</span>`,
-            }),
-            // style: 'display: none',
-            attrs: `data-id="home"`,
-            tabHref: `${getProxyPath()}`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption('home')),
-          })}
-          ${await BtnIcon.instance({
-            class: 'in wfa main-btn-menu main-btn-log-in',
-            useMenuBtn: true,
-            label: renderMenuLabel({
-              icon: html`<i class="fas fa-sign-in-alt"></i>`,
-              text: html`<span class="menu-label-text">${Translate.instance('log-in')}</span>`,
-            }),
-            attrs: `data-id="log-in"`,
-            tabHref: `${getProxyPath()}log-in`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption('log-in')),
-          })}
-          ${await BtnIcon.instance({
-            class: 'in wfa main-btn-menu main-btn-sign-up',
-            useMenuBtn: true,
-            label: renderMenuLabel({
-              icon: html`<i class="fas fa-user-plus"></i>`,
-              text: html`<span class="menu-label-text">${Translate.instance('sign-up')}</span>`,
-            }),
-            attrs: `data-id="sign-up"`,
-            tabHref: `${getProxyPath()}sign-up`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption('sign-up')),
-          })}
-          ${await BtnIcon.instance({
-            class: 'in wfa main-btn-menu main-btn-log-out',
-            useMenuBtn: true,
-            label: renderMenuLabel({
-              icon: html`<i class="fas fa-sign-out-alt"></i>`,
-              text: html`<span class="menu-label-text">${Translate.instance('log-out')}</span>`,
-            }),
-            attrs: `data-id="log-out"`,
-            tabHref: `${getProxyPath()}log-out`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption('log-out')),
-            style: 'display: none',
-          })}
-          ${await BtnIcon.instance({
-            class: 'in wfa main-btn-menu main-btn-account',
-            useMenuBtn: true,
-            label: renderMenuLabel({
-              icon: html`<i class="fas fa-user-circle"></i>`,
-              text: html`<span class="menu-label-text">${Translate.instance('account')}</span>`,
-            }),
-            style: 'display: none',
-            attrs: `data-id="account"`,
-            tabHref: `${getProxyPath()}account`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption('account')),
-          })}
-          ${await BtnIcon.instance({
-            class: 'in wfa main-btn-menu main-btn-recover hide',
-            useMenuBtn: true,
-            label: renderMenuLabel({
-              icon: html`<i class="fa-solid fa-arrow-rotate-left"></i>`,
-              text: html`<span class="menu-label-text">${Translate.instance('recover')}</span>`,
-            }),
-            attrs: `data-id="recover"`,
-            tabHref: `${getProxyPath()}recover`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption('recover')),
-          })}
-          ${await BtnIcon.instance({
-            class: 'in wfa main-btn-menu main-btn-nutrition-tips hide',
-            useMenuBtn: true,
-            label: renderMenuLabel({
-              icon: html`<img
-                class="slide-menu-icon"
-                src="${getProxyPath()}${MenuHomeHealthcare['nutrition-tips'].icon}"
-              />`,
-              text: html`<span class="inl menu-label-text menu-label-text-slide-menu-icon"
-                >${Translate.instance('nutrition-tips')}</span
-              >`,
-            }),
-            attrs: `data-id="nutrition-tips"`,
-            tabHref: `${getProxyPath()}nutrition-tips`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption('nutrition-tips')),
-          })}
-          ${await BtnIcon.instance({
-            class: 'in wfa main-btn-menu main-btn-record-mood hide',
-            useMenuBtn: true,
-            label: renderMenuLabel({
-              icon: html`<img
-                class="slide-menu-icon"
-                src="${getProxyPath()}${MenuHomeHealthcare['record-mood'].icon}"
-              />`,
-              text: html`<span class="inl menu-label-text menu-label-text-slide-menu-icon"
-                >${Translate.instance('record-mood')}</span
-              >`,
-            }),
-            attrs: `data-id="record-mood"`,
-            tabHref: `${getProxyPath()}record-mood`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption('record-mood')),
-          })}
-          ${await BtnIcon.instance({
-            class: 'in wfa main-btn-menu main-btn-calendar',
-            useMenuBtn: true,
-            label: renderMenuLabel({
-              icon: html`<i class="fas fa-calendar-alt"></i>`,
-              text: html`<span class="menu-label-text">${Translate.instance('healthcare-appointment')}</span>
-                <!-- ${Translate.instance('calendar')} --->`,
-            }),
-            attrs: `data-id="calendar"`,
-            tabHref: `${getProxyPath()}calendar`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption('calendar')),
-          })}
-          ${await BtnIcon.instance({
-            class: 'in wfa main-btn-menu main-btn-healthcare-appointment hide',
-            useMenuBtn: true,
-            label: renderMenuLabel({
-              icon: html` <i class="fas fa-medkit"></i>`,
-              text: html`<span class="menu-label-text">${Translate.instance('healthcare-appointment')}</span>`,
-            }),
-            attrs: `data-id="healthcare-appointment"`,
-            tabHref: `${getProxyPath()}healthcare-appointment`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption('healthcare-appointment', 'right')),
-          })}
-          ${await BtnIcon.instance({
-            class: 'in wfa main-btn-menu main-btn-healthcare-appointment-management hide',
-            useMenuBtn: true,
-            label: renderMenuLabel({
-              icon: html`<i class="fa-solid fa-rectangle-list"></i>`,
-              text: html`<span class="menu-label-text"
-                >${Translate.instance('healthcare-appointment-management')}</span
-              >`,
-            }),
-            attrs: `data-id="healthcare-appointment-management"`,
-            tabHref: `${getProxyPath()}healthcare-appointment-management`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption('healthcare-appointment-management')),
-          })}
-        </div>
-      `,
+      html: await ShellNavigation.render(navigation),
       barConfig: newInstance(barConfig),
       title: BannerAppTemplate,
-      // titleClass: 'hide',
       titleRender: () => {
         ThemeEvents['titleRender'] = () => {
           const srcLogo = `${getProxyPath()}android-chrome-192x192.png`;
@@ -238,6 +279,7 @@ class AppShellHealthcare {
           />`;
       },
       mode: 'slide-menu',
+      shell: { layout: 'standard' },
       RouterInstance,
       htmlMainBody: async () => {
         setTimeout(() => {
@@ -320,380 +362,7 @@ class AppShellHealthcare {
         `;
       },
     });
-
-    AppShellHealthcare.Data[id].sortable = new Sortable(s(`.menu-btn-container`), {
-      animation: 150,
-      group: `menu-sortable`,
-      forceFallback: true,
-      fallbackOnBody: true,
-      handle: '.handle-btn-container',
-      store: {
-        /**
-         * Get the order of elements. Called once during initialization.
-         * @param   {Sortable}  sortable
-         * @returns {Array}
-         */
-        get: function (sortable) {
-          const order = localStorage.getItem(sortable.options.group.name);
-          return order ? order.split('|') : [];
-        },
-
-        /**
-         * Save the order of elements. Called onEnd (when the item is dropped).
-         * @param {Sortable}  sortable
-         */
-        set: function (sortable) {
-          const order = sortable.toArray();
-          localStorage.setItem(sortable.options.group.name, order.join('|'));
-        },
-      },
-      // chosenClass: 'css-class',
-      // ghostClass: 'css-class',
-      // Element dragging ended
-      onEnd: function (/**Event*/ evt) {
-        // console.log('Sortable onEnd', evt);
-        // console.log('evt.oldIndex', evt.oldIndex);
-        // console.log('evt.newIndex', evt.newIndex);
-        const slotId = Array.from(evt.item.classList).pop();
-        // console.log('slotId', slotId);
-        if (evt.oldIndex === evt.newIndex) s(`.${slotId}`).click();
-
-        // var itemEl = evt.item; // dragged HTMLElement
-        // evt.to; // target list
-        // evt.from; // previous list
-        // evt.oldIndex; // element's old index within old parent
-        // evt.newIndex; // element's new index within new parent
-        // evt.oldDraggableIndex; // element's old index within old parent, only counting draggable elements
-        // evt.newDraggableIndex; // element's new index within new parent, only counting draggable elements
-        // evt.clone; // the clone element
-        // evt.pullMode; // when item is in another sortable: `"clone"` if cloning, `true` if moving
-      },
-    });
-
-    EventsUI.onClick(`.main-btn-sign-up`, async () => {
-      const { barConfig } = await Themes[Css.currentTheme]();
-      await Modal.instance({
-        id: 'modal-sign-up',
-        route: 'sign-up',
-        barConfig,
-        title: renderViewTitle({
-          icon: html`<i class="fas fa-user-plus"></i>`,
-          text: Translate.instance('sign-up'),
-        }),
-        html: async () =>
-          await SignUp.instance({
-            idModal: 'modal-sign-up',
-            bottomRender: async () => html` <div class="in section-mp"></div>`,
-          }),
-        handleType: 'bar',
-        maximize: true,
-        mode: 'view',
-        slideMenu: 'modal-menu',
-        RouterInstance,
-      });
-    });
-
-    EventsUI.onClick(`.main-btn-log-out`, async () => {
-      const { barConfig } = await Themes[Css.currentTheme]();
-      await Modal.instance({
-        id: 'modal-log-out',
-        route: 'log-out',
-        barConfig,
-        title: renderViewTitle({
-          icon: html`<i class="fas fa-sign-out-alt"></i>`,
-          text: Translate.instance('log-out'),
-        }),
-        html: async () => await LogOut.instance(),
-        handleType: 'bar',
-        maximize: true,
-        mode: 'view',
-        slideMenu: 'modal-menu',
-        RouterInstance,
-      });
-    });
-
-    EventsUI.onClick(`.main-btn-log-in`, async () => {
-      const { barConfig } = await Themes[Css.currentTheme]();
-      await Modal.instance({
-        id: 'modal-log-in',
-        route: 'log-in',
-        barConfig,
-        title: renderViewTitle({
-          icon: html`<i class="fas fa-sign-in-alt"></i>`,
-          text: Translate.instance('log-in'),
-        }),
-        html: async () => await LogIn.instance(),
-        handleType: 'bar',
-        maximize: true,
-        mode: 'view',
-        slideMenu: 'modal-menu',
-        RouterInstance,
-      });
-    });
-
-    EventsUI.onClick(`.main-btn-account`, async () => {
-      const { barConfig } = await Themes[Css.currentTheme]();
-      await Modal.instance({
-        id: 'modal-account',
-        route: 'account',
-        barConfig,
-        title: renderViewTitle({
-          icon: html`<i class="fas fa-user-circle"></i>`,
-          text: Translate.instance('account'),
-        }),
-        html: async () =>
-          await Account.instance({
-            idModal: 'modal-account',
-            user: AppStoreHealthcare.Data.user.main.model.user,
-            disabled: [],
-          }),
-        handleType: 'bar',
-        maximize: true,
-        mode: 'view',
-        slideMenu: 'modal-menu',
-        RouterInstance,
-      });
-    });
-
-    EventsUI.onClick(`.main-btn-settings`, async () => {
-      const { barConfig } = await Themes[Css.currentTheme]();
-      await Modal.instance({
-        id: 'modal-settings',
-        route: 'settings',
-        barConfig,
-        title: renderViewTitle({
-          icon: html` <i class="fas fa-sliders-h"></i>`,
-          text: Translate.instance('settings'),
-        }),
-        html: async () => await SettingsHealthcare.instance({ idModal: 'modal-settings' }),
-        handleType: 'bar',
-        maximize: true,
-        mode: 'view',
-        slideMenu: 'modal-menu',
-        RouterInstance,
-      });
-    });
-
-    EventsUI.onClick(`.main-btn-recover`, async () => {
-      const { barConfig } = await Themes[Css.currentTheme]();
-      await Modal.instance({
-        id: 'modal-recover',
-        route: 'recover',
-        barConfig,
-        title: renderViewTitle({
-          icon: html`<i class="fa-solid fa-arrow-rotate-left"></i>`,
-          text: Translate.instance('recover'),
-        }),
-        html: async () =>
-          await Recover.instance({ idModal: 'modal-recover', user: AppStoreHealthcare.Data.user.main.model.user }),
-        handleType: 'bar',
-        maximize: true,
-        mode: 'view',
-        slideMenu: 'modal-menu',
-        RouterInstance,
-      });
-    });
-
-    const appoimentFormRender = async (eventData) => {
-      const { barConfig } = await Themes[Css.currentTheme]();
-      const idModal = `modal-healthcare-appointment${eventData ? `-${new Date(eventData.start).getTime()}` : ''}`;
-      await Modal.instance({
-        id: idModal,
-        route: 'healthcare-appointment',
-        barConfig,
-        title: renderViewTitle({
-          icon: html` <i class="fas fa-medkit"></i>`,
-          text: `${eventData ? `${eventData.event.title} ` : ''}${Translate.instance('healthcare-appointment')}`,
-        }),
-        html: async () =>
-          await AppointmentFormHealthCare.instance({ idModal: 'modal-healthcare-appointment' }, eventData),
-        handleType: 'bar',
-        maximize: true,
-        mode: 'view',
-        slideMenu: 'modal-menu',
-        RouterInstance,
-        // barMode,
-      });
-      if (!eventData) return { status: 'error' };
-      const cleanEvent = () => {
-        AppointmentFormHealthCare.offSubmitted(idModal);
-        delete Modal.Data[idModal].onCloseListener[idModal];
-      };
-      return await new Promise((resolve) => {
-        AppointmentFormHealthCare.onSubmitted(
-          async ({ status, data, message }) => {
-            cleanEvent();
-            await Modal.removeModal(idModal);
-            return resolve({ status });
-          },
-          { key: idModal },
-        );
-        Modal.Data[idModal].onCloseListener[idModal] = () => {
-          cleanEvent();
-          return resolve({ status: 'error' });
-        };
-      });
-    };
-
-    EventsUI.onClick(`.main-btn-calendar`, async () => {
-      const idModal = 'modal-calendar';
-      const { barConfig } = await Themes[Css.currentTheme]();
-      const route = 'calendar';
-      const { data: hiddenDates } = await HealthcareAppointmentService.get({ id: 'appointment-dates' });
-      await Modal.instance({
-        id: idModal,
-        route,
-        barConfig,
-        title: renderViewTitle({
-          icon: html` <i class="fas fa-calendar-alt"></i>`,
-          text: html`${Translate.instance('healthcare-appointment')}`, // Translate.instance('calendar'),
-        }),
-        html: async () => {
-          setTimeout(() => {
-            Modal.Data['modal-calendar'].onCloseListener['TopRefreshEvent'] = () => {
-              LogIn.offLogin('model-appointment-calendar');
-              LogOut.offLogout('model-appointment-calendar');
-            };
-            const authSwitch = () => {
-              if (!s(`.btn-calendar-panel-${idModal}-add`)) return;
-              if (commonModeratorGuard(AppStoreHealthcare.Data.user.main.model.user.role))
-                s(`.btn-calendar-panel-${idModal}-add`).classList.remove('hide');
-              else {
-                s(`.btn-calendar-panel-${idModal}-add`).classList.add('hide');
-              }
-            };
-            LogIn.onLogin(authSwitch, { key: 'model-appointment-calendar' });
-            LogOut.onLogout(authSwitch, { key: 'model-appointment-calendar' });
-            setTimeout(() => {
-              if (s(`.main-body-btn-ui-open`).classList.contains('hide')) s(`.main-body-btn-ui`).click();
-
-              setTimeout(() => {
-                s(`.btn-calendar-panel-modal-calendar-custom0`).click();
-              }, 500);
-              setTimeout(() => {
-                s(`.btn-calendar-panel-modal-calendar-custom0`).click();
-              }, 1500);
-            });
-          });
-          return await CalendarCore.instance({
-            idModal,
-            appStore: AppStoreHealthcare,
-            route,
-            hiddenDates,
-            parentIdModal: 'modal-calendar',
-            role: {
-              add: () => commonModeratorGuard(AppStoreHealthcare.Data.user.main.model.user.role),
-            },
-            eventClick: async function (dateData, args) {
-              const { status } = await appoimentFormRender(dateData);
-              if (status === 'success') {
-                CalendarCore.Data[idModal].hiddenDates.push(dateData.start);
-                args.el.remove();
-              }
-            },
-          });
-        },
-        handleType: 'bar',
-        maximize: true,
-        mode: 'view',
-        slideMenu: 'modal-menu',
-        RouterInstance,
-        observer: true,
-      });
-    });
-
-    EventsUI.onClick(`.main-btn-healthcare-appointment`, () => {
-      s(`.main-btn-calendar`).click();
-      // appoimentFormRender();
-    });
-
-    EventsUI.onClick(`.main-btn-healthcare-appointment-management`, async () => {
-      const { barConfig } = await Themes[Css.currentTheme]();
-      await Modal.instance({
-        id: 'modal-healthcare-appointment-management',
-        route: 'healthcare-appointment-management',
-        barConfig,
-        title: renderViewTitle({
-          icon: html`<i class="fa-solid fa-rectangle-list"></i>`,
-          text: Translate.instance('healthcare-appointment-management'),
-        }),
-        html: async () => await HealthcareAppointmentManagement.instance({ appStore: AppStoreHealthcare }),
-        handleType: 'bar',
-        maximize: true,
-        mode: 'view',
-        slideMenu: 'modal-menu',
-        RouterInstance,
-      });
-    });
-
-    EventsUI.onClick(`.main-btn-record-mood`, async () => {
-      const { barConfig } = await Themes[Css.currentTheme]();
-      await Modal.instance({
-        id: 'modal-record-mood',
-        route: 'record-mood',
-        barConfig,
-        title: renderViewTitle({
-          icon: html`<img class="slide-menu-icon" src="${getProxyPath()}${MenuHomeHealthcare['record-mood'].icon}" />`,
-          text: Translate.instance('record-mood'),
-        }),
-        html: await RecordMoodHealthcare.instance({ idModal: 'modal-record-mood' }),
-        observer: true,
-        handleType: 'bar',
-        maximize: true,
-        mode: 'view',
-        slideMenu: 'modal-menu',
-        RouterInstance,
-      });
-    });
-
-    EventsUI.onClick(`.main-btn-nutrition-tips`, async () => {
-      const { barConfig } = await Themes[Css.currentTheme]();
-      await Modal.instance({
-        id: 'modal-nutrition-tips',
-        route: 'nutrition-tips',
-        barConfig,
-        title: renderViewTitle({
-          icon: html`<img
-            class="slide-menu-icon"
-            src="${getProxyPath()}${MenuHomeHealthcare['nutrition-tips'].icon}"
-          />`,
-          text: Translate.instance('nutrition-tips'),
-        }),
-        html: async () => {
-          let render = '';
-
-          for (const indexTip of range(0, NutritionalTips.length - 1)) {
-            render += html`<div class="in nutrition-tips-panel-container">
-              <div class="in b0-panel-sub-container">
-                <div class="fl">
-                  <div class="in fll" style="width: 30%;">
-                    <div class="in nutrition-tips-panel-cell">
-                      <div class="abs center">
-                        <img
-                          class="in nutrition-tips-panel-icon"
-                          src="${getProxyPath()}${NutritionalTips[indexTip].icon}"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                  <div class="in fll" style="width: 70%;">
-                    <div class="in nutrition-tips-panel-cell">
-                      <br />${Translate.instance(`nutrition-tips-${indexTip}`)}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>`;
-          }
-          return html`${render}`;
-        },
-        handleType: 'bar',
-        maximize: true,
-        mode: 'view',
-        slideMenu: 'modal-menu',
-        RouterInstance,
-      });
-    });
+    ShellNavigation.bind(navigation);
   }
 }
 
