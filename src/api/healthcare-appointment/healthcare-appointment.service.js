@@ -1,8 +1,6 @@
 import { generateRandomPasswordSelection, strToDateUTC } from '../../client/components/core/CommonJs.js';
-import { DataBaseProviderService } from '../../db/DataBaseProvider.js';
-import { MailerProvider } from '../../mailer/MailerProvider.js';
+import { DataBaseProviderService } from '../../db/database-provider.js';
 import { loggerFactory } from '../../server/ops/logger.js';
-import { resolveHostKeyContext } from '../../server/runtime/conf.js';
 import { UserService } from '../user/user.service.js';
 import { HealthcareAppointmentDto } from './healthcare-appointment.model.js';
 
@@ -49,8 +47,8 @@ class HealthcareAppointmentService {
 
     const result = await new HealthcareAppointment(req.body).save();
 
+    const { mailer } = options.services;
     (async () => {
-      const id = resolveHostKeyContext(options);
       const translate = {
         H1: { es: 'Cita agendada', en: 'Appointment scheduled' },
         P1: {
@@ -64,25 +62,16 @@ class HealthcareAppointmentService {
           } Hrs. time. The nutritionist will contact you to confirm the appointment.`,
         },
       };
-      const sendResult = await MailerProvider.send({
-        id,
-        sendOptions: {
-          to: req.body.patient.email, // list of receivers
-          subject: translate.H1[req.lang], // Subject line
-          text: translate.H1[req.lang], // plain text body
-          html: MailerProvider.instance[id].templates.userVerifyEmail
-            .replace('img', `img style='display: none'`)
-            .replace('{{H1}}', translate.H1[req.lang])
-            .replace('{{P1}}', translate.P1[req.lang])
-            .replace(`{{COMPANY}}`, options.host), // html body
-          attachments: [
-            // {
-            //   filename: 'logo.png',
-            //   path: `./logo.png`,
-            //   cid: 'logo', // <img src='cid:logo'>
-            // },
-          ],
-        },
+      const sendResult = await mailer.send({
+        to: req.body.patient.email, // list of receivers
+        subject: translate.H1[req.lang], // Subject line
+        text: translate.H1[req.lang], // plain text body
+        html: mailer
+          .template('userVerifyEmail')
+          .replace('img', `img style='display: none'`)
+          .replace('{{H1}}', translate.H1[req.lang])
+          .replace('{{P1}}', translate.P1[req.lang])
+          .replace(`{{COMPANY}}`, options.host), // html body
       });
     })();
 

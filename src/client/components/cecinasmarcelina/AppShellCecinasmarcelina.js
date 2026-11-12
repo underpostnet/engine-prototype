@@ -13,8 +13,8 @@ import { RouterCecinasmarcelina, BannerAppTemplate } from './RouterCecinasmarcel
 import { SettingsCecinasmarcelina } from './SettingsCecinasmarcelina.js';
 import { Badge } from '../core/Badge.js';
 import { Recover } from '../core/Recover.js';
-import { Page500 } from '../core/500.js';
-import { Page404 } from '../core/404.js';
+import { Page500 } from '../core/Page500.js';
+import { Page404 } from '../core/Page404.js';
 import { PanelForm } from '../core/PanelForm.js';
 import { Chat } from '../core/Chat.js';
 import { PublicProfile } from '../core/PublicProfile.js';

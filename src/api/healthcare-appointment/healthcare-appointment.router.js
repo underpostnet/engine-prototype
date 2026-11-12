@@ -1,66 +1,58 @@
 import { loggerFactory } from '../../server/ops/logger.js';
-import { moderatorGuard } from '../../server/security/auth.js';
 
 import { HealthcareAppointmentController } from './healthcare-appointment.controller.js';
 import express from 'express';
 
 const logger = loggerFactory(import.meta);
 
-class HealthcareAppointmentRouter {
+/** @type {import('../types.js').ApiModuleDefinition} */
+export const ApiModule = {
+  id: 'healthcare-appointment',
+  services: ['database', 'auth', 'mailer'],
   /**
-   * @param {import('../types.js').RouterOptions} options
+   * @param {import('../types.js').ApiRouterContext} context
    * @returns {import('express').Router}
    */
-  static router(options) {
+  createRouter(context) {
+    const { auth } = context.services;
     const router = express.Router();
     router.post(
       `/:id`,
-      options.authMiddleware,
-      moderatorGuard,
-      async (req, res) => await HealthcareAppointmentController.post(req, res, options),
+      auth.requireModerator,
+      async (req, res) => await HealthcareAppointmentController.post(req, res, context),
     );
-    router.post(`/`, async (req, res) => await HealthcareAppointmentController.post(req, res, options));
-    router.get(`/appointment-dates`, async (req, res) => await HealthcareAppointmentController.get(req, res, options));
+    router.post(`/`, async (req, res) => await HealthcareAppointmentController.post(req, res, context));
+    router.get(`/appointment-dates`, async (req, res) => await HealthcareAppointmentController.get(req, res, context));
     router.get(
       `/:id`,
-      options.authMiddleware,
-      moderatorGuard,
-      async (req, res) => await HealthcareAppointmentController.get(req, res, options),
+      auth.requireModerator,
+      async (req, res) => await HealthcareAppointmentController.get(req, res, context),
     );
     router.get(
       `/`,
-      options.authMiddleware,
-      moderatorGuard,
-      async (req, res) => await HealthcareAppointmentController.get(req, res, options),
+      auth.requireModerator,
+      async (req, res) => await HealthcareAppointmentController.get(req, res, context),
     );
     router.put(
       `/:id`,
-      options.authMiddleware,
-      moderatorGuard,
-      async (req, res) => await HealthcareAppointmentController.put(req, res, options),
+      auth.requireModerator,
+      async (req, res) => await HealthcareAppointmentController.put(req, res, context),
     );
     router.put(
       `/`,
-      options.authMiddleware,
-      moderatorGuard,
-      async (req, res) => await HealthcareAppointmentController.put(req, res, options),
+      auth.requireModerator,
+      async (req, res) => await HealthcareAppointmentController.put(req, res, context),
     );
     router.delete(
       `/:id`,
-      options.authMiddleware,
-      moderatorGuard,
-      async (req, res) => await HealthcareAppointmentController.delete(req, res, options),
+      auth.requireModerator,
+      async (req, res) => await HealthcareAppointmentController.delete(req, res, context),
     );
     router.delete(
       `/`,
-      options.authMiddleware,
-      moderatorGuard,
-      async (req, res) => await HealthcareAppointmentController.delete(req, res, options),
+      auth.requireModerator,
+      async (req, res) => await HealthcareAppointmentController.delete(req, res, context),
     );
     return router;
-  }
-}
-
-const ApiRouter = (options) => HealthcareAppointmentRouter.router(options);
-
-export { ApiRouter, HealthcareAppointmentRouter };
+  },
+};

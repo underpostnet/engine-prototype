@@ -18,8 +18,8 @@ import { Recover } from '../core/Recover.js';
 import { MenuHomeHealthcare, NutritionalTips } from './CommonHealthcare.js';
 import { CalendarCore } from '../core/CalendarCore.js';
 import { AppointmentFormHealthCare } from './AppointmentFormHealthCare.js';
-import { HealthcareAppointmentService } from '../../services/healthcare-appointment/healthcare-appointment.service.js';
-import { HealthcareAppointmentManagement } from '../../services/healthcare-appointment/healthcare-appointment.management.js';
+import { HealthcareAppointmentService } from '../../services/healthcare-appointment/HealthcareAppointmentService.js';
+import { HealthcareAppointmentManagement } from '../../services/healthcare-appointment/HealthcareAppointmentManagement.js';
 import { RecordMoodHealthcare } from './RecordMoodHealthcare.js';
 import { getProxyPath, getQueryParams } from '../core/Router.js';
 

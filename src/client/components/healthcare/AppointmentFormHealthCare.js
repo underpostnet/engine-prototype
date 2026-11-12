@@ -1,4 +1,4 @@
-import { HealthcareAppointmentService } from '../../services/healthcare-appointment/healthcare-appointment.service.js';
+import { HealthcareAppointmentService } from '../../services/healthcare-appointment/HealthcareAppointmentService.js';
 import { BtnIcon } from '../core/BtnIcon.js';
 import { dynamicCol } from '../core/Css.js';
 import { EventsUI } from '../core/EventsUI.js';

@@ -13,9 +13,9 @@ import { RouterBymyelectrics, BannerAppTemplate } from './RouterBymyelectrics.js
 import { SettingsBymyelectrics } from './SettingsBymyelectrics.js';
 import { Docs } from '../core/Docs.js';
 import { Recover } from '../core/Recover.js';
-import { DefaultManagement } from '../../services/default/default.management.js';
-import { Page500 } from '../core/500.js';
-import { Page404 } from '../core/404.js';
+import { DefaultManagement } from '../../services/default/DefaultManagement.js';
+import { Page500 } from '../core/Page500.js';
+import { Page404 } from '../core/Page404.js';
 
 class AppShellBymyelectrics {
   static async instance(options = { htmlMainBody: () => html`` }) {

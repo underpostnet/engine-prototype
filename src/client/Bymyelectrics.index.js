@@ -14,7 +14,7 @@ import { borderChar, dynamicCol } from './components/core/Css.js';
 import { Translate } from './components/core/Translate.js';
 import { s } from './components/core/VanillaJs.js';
 import { getProxyPath } from './components/core/Router.js';
-import { windowGetH } from './components/core/windowGetDimensions.js';
+import { windowGetH } from './components/core/WindowGetDimensions.js';
 import { Responsive } from './components/core/Responsive.js';
 
 const BymyelectricsTemplate = async () => {
